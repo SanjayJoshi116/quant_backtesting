@@ -18,40 +18,11 @@ Design notes:
 import numpy as np
 import pandas as pd
 
-# ── Default parameters ────────────────────────────────────────────────────────
-DEFAULT_PARAMS: dict = {
-    # Risk management
-    "sl_mult":        2.0,
-    "tp_mult_long":   3.0,
-    "tp_mult_short":  2.25,
-    # ADX thresholds
-    "adx_long":       15,
-    "adx_short":      25,
-    # RSI windows — longs
-    "rsi_pb_lo":      38,
-    "rsi_pb_hi":      62,
-    "rsi_bo_lo":      48,
-    "rsi_bo_hi":      75,
-    "rsi_pb50_lo":    38,
-    "rsi_pb50_hi":    55,
-    # RSI windows — shorts (kept for completeness, not currently triggered)
-    "rsi_pbs_lo":     45,
-    "rsi_pbs_hi":     60,
-    "rsi_bos_lo":     30,
-    "rsi_bos_hi":     50,
-    # Volume multipliers
-    "vol_mult_long":  1.05,
-    "vol_mult_short": 1.30,
-    # Entry zone tolerances
-    "pb_tol":         1.008,
-    "pb50_tol":       1.005,
-    "pb_short_tol":   0.997,
-    # Short-only filters
-    "di_gap_min":     5.0,
-    "min_room_atr":   3.0,
-}
+from core.config import load_config
 
-_ROUND_TRIP_COST = 0.002   # 0.20 % total (both sides)
+def _round_trip_cost() -> float:
+    cfg = load_config()
+    return (cfg.commission_pct + cfg.slippage_pct) * 2
 
 
 # ── Main backtester ────────────────────────────────────────────────────────────
@@ -62,7 +33,7 @@ def run_backtest(df: pd.DataFrame,
     Bar-by-bar backtest on a fully-prepared indicator DataFrame.
     Exits: MeshBreak / SL / TP only (no trailing stop).
     """
-    p = DEFAULT_PARAMS.copy()
+    p = load_config().to_params_dict()
     if params:
         p.update(params)
 
@@ -163,7 +134,7 @@ def run_backtest(df: pd.DataFrame,
             if exit_px is not None:
                 raw_pnl = (exit_px / entry_px - 1.0) if direction == "long" \
                           else (entry_px / exit_px - 1.0)
-                pnl_pct = (raw_pnl - _ROUND_TRIP_COST) * 100.0
+                pnl_pct = (raw_pnl - _round_trip_cost()) * 100.0
 
                 entry_ts  = pd.Timestamp(entry_date)
                 exit_ts   = pd.Timestamp(dates[i])

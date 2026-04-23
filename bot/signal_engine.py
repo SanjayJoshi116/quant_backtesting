@@ -17,7 +17,7 @@ import pandas as pd
 # Allow imports from the project root (indicators.py lives there)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from indicators import prepare_indicators
-from bot.config import PARAMS
+from core.config import load_config
 
 # ── Signal type metadata ───────────────────────────────────────────────────────
 SIGNAL_META = {
@@ -56,7 +56,7 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
     -------
     List of signal dicts.  Empty list = no signal today.
     """
-    p = PARAMS.copy()
+    p = load_config().to_params_dict()
     if params:
         p.update(params)
 

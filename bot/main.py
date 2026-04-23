@@ -51,34 +51,31 @@ def _print_summary(signals: list[dict]) -> None:
     print(f"  Total signals: {len(signals)}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="NSE Swing Alert Screener")
-    parser.add_argument(
-        "--tickers", nargs="+", metavar="TICKER",
-        help="Override watchlist with specific tickers (e.g. WIPRO.NS TCS.NS)"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true",
-        help="Scan and print results but do NOT send email"
-    )
-    args = parser.parse_args()
-
+def run(watchlist: list[str] | None = None,
+        dry_run:   bool            = False) -> list[dict]:
+    """Callable entry-point used by pipeline.py and tests."""
     print("=" * 70)
     print(f"  NSE Swing Screener  ·  {datetime.now().strftime('%d %b %Y  %H:%M IST')}")
     print("=" * 70)
 
-    watchlist = args.tickers if args.tickers else None
-    signals   = run_scan(watchlist=watchlist, verbose=True)
-
+    signals = run_scan(watchlist=watchlist, verbose=True)
     _print_summary(signals)
 
-    if args.dry_run:
+    if dry_run:
         print("\n  [DRY RUN] Email not sent.")
     else:
         print()
         send_alert(signals)
 
-    return signals   # returned when called from scheduler
+    return signals
+
+
+def main():
+    parser = argparse.ArgumentParser(description="NSE Swing Alert Screener")
+    parser.add_argument("--tickers", nargs="+", metavar="TICKER")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    run(watchlist=args.tickers or None, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":

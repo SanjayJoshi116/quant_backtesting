@@ -21,7 +21,9 @@ warnings.filterwarnings("ignore")
 # ── Import project modules ────────────────────────────────────────────────────
 from data         import download_all_data, TICKERS, NIFTY_TICKER
 from indicators   import prepare_indicators
-from backtester   import run_backtest, DEFAULT_PARAMS
+from backtester   import run_backtest
+from core.config  import load_config
+from core.logging import log_backtest_run
 from analysis     import (compute_metrics, compute_equity_curve,
                           compute_portfolio_equity, compute_monthly_returns,
                           breakdown_by_exit, breakdown_by_signal,
@@ -124,6 +126,18 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
     )
     combined_metrics = compute_metrics(combined_df)
 
+    run_id = log_backtest_run(
+        n_trades=combined_metrics["n_trades"],
+        sharpe=combined_metrics["sharpe"],
+        win_rate=combined_metrics["win_rate"],
+        profit_factor=combined_metrics["profit_factor"],
+        max_dd=combined_metrics["max_dd"],
+        start_date="2016-01-01",
+        end_date="2026-04-30",
+        results_path=RESULTS_DIR,
+    )
+    print(f"\n  [LOG] Backtest run logged  run_id={run_id[:8]}…")
+
     print("\n  ── COMBINED PORTFOLIO ─────────────────────────────────")
     print_metrics("PORTFOLIO", combined_metrics)
 
@@ -166,7 +180,7 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
 
     # ── STAGE 5: Walk-Forward Optimisation ────────────────────────────────────
     _hdr(5, "Walk-Forward Optimisation")
-    best_params = DEFAULT_PARAMS.copy()
+    best_params = load_config().to_params_dict()
     optim_results = None
 
     if skip_optim:

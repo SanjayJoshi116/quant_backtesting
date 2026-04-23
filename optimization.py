@@ -14,7 +14,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from backtester import run_backtest, DEFAULT_PARAMS
+from backtester import run_backtest
+from core.config import load_config
 from analysis  import compute_metrics
 
 # ── Date splits ───────────────────────────────────────────────────────────────
@@ -86,7 +87,7 @@ def run_grid_search(ind_dfs: dict,
 
     results = []
     for combo in tqdm(combos, desc="  Optimising", ncols=70):
-        params = DEFAULT_PARAMS.copy()
+        params = load_config().to_params_dict()
         params.update(dict(zip(keys, combo)))
 
         res = _run_combo(ind_dfs, params, IS_START, IS_END)
@@ -165,7 +166,7 @@ def sensitivity_analysis(ind_dfs: dict,
     Flag parameters where ±20 % change causes >30 % Sharpe drop.
     """
     if base_params is None:
-        base_params = DEFAULT_PARAMS.copy()
+        base_params = load_config().to_params_dict()
 
     base_res    = _run_combo(ind_dfs, base_params, IS_START, IS_END)
     base_sharpe = base_res["sharpe"]
