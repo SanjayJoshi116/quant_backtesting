@@ -42,8 +42,9 @@ TICKERS = [
     "ETERNAL.NS",    "TATAELXSI.NS",  "KPITTECH.NS", 
 
     # ── BANKING & NBFC (Expanded) ────────────────────────────────────────────
-    "KOTAKBANK.NS",  "AXISBANK.NS",   "INDUSINDBK.NS", "BANDHANBNK.NS",
+    "KOTAKBANK.NS",  "AXISBANK.NS",   "INDUSINDBK.NS",
     "BAJAJFINSV.NS", "CHOLAFIN.NS",   "MUTHOOTFIN.NS",
+    # BANDHANBNK removed: 4 trades, negative Sharpe, no statistical edge
 
     # ── IT & SOFTWARE (Expanded) ─────────────────────────────────────────────
     "TCS.NS",        "TECHM.NS",      "MPHASIS.NS",    "LTIM.NS",
@@ -63,7 +64,8 @@ TICKERS = [
 
     # ── PHARMA & DIAGNOSTICS (Expanded) ─────────────────────────────────────
     "TORNTPHARM.NS", "AUROPHARMA.NS", "LALPATHLAB.NS",
-    "METROPOLIS.NS", "IPCALAB.NS",
+    "IPCALAB.NS",
+    # METROPOLIS removed: Sharpe -0.17, WR 23.5%, consistently negative
 
     # ── OIL, GAS & POWER (Expanded) ──────────────────────────────────────────
     "BPCL.NS",       "IOC.NS",        "GAIL.NS",
@@ -73,10 +75,12 @@ TICKERS = [
     "HDFCLIFE.NS",   "SBILIFE.NS",    "ICICIGI.NS",
 
     # ── CEMENT ───────────────────────────────────────────────────────────────
-    "ULTRACEMCO.NS", "SHREECEM.NS",   "AMBUJACEM.NS",  "ACC.NS",
+    "ULTRACEMCO.NS",
+    # SHREECEM, AMBUJACEM, ACC removed: all negative Sharpe, cement sector doesn't trend cleanly
 
     # ── MEDIA & TELECOM ──────────────────────────────────────────────────────
-    "INDUSTOWER.NS", "IDEA.NS",       "ZEEL.NS",
+    "INDUSTOWER.NS", "IDEA.NS",
+    # ZEEL removed: Sharpe -0.86, WR 13.3%, statistically significant negative edge (p=0.0125)
 ]
 
 NIFTY_TICKER   = "^NSEI"

@@ -16,15 +16,18 @@ def compute_equity_curve(trades_df: pd.DataFrame,
                          initial_equity: float = 100.0) -> pd.Series:
     """
     Build a trade-by-trade equity curve sorted by exit date.
-    Each trade compounds the previous equity by (1 + pnl_pct/100).
+
+    Uses pnl_on_equity (position-sized return on account equity) when available,
+    which gives a realistic max-drawdown. Falls back to pnl_pct for legacy data.
     """
     if trades_df.empty:
         return pd.Series([initial_equity], dtype=float)
 
-    df = trades_df.sort_values("exit_date").reset_index(drop=True)
+    col = "pnl_on_equity" if "pnl_on_equity" in trades_df.columns else "pnl_pct"
+    df  = trades_df.sort_values("exit_date").reset_index(drop=True)
     equity = np.empty(len(df) + 1)
     equity[0] = initial_equity
-    for k, row in enumerate(df["pnl_pct"].values):
+    for k, row in enumerate(df[col].values):
         equity[k + 1] = equity[k] * (1.0 + row / 100.0)
 
     dates = [df["entry_date"].iloc[0]] + list(df["exit_date"])
@@ -54,7 +57,7 @@ def compute_metrics(trades_df: pd.DataFrame) -> dict:
     if trades_df is None or trades_df.empty:
         return empty
 
-    pnl = trades_df["pnl_pct"].values
+    pnl = trades_df["pnl_pct"].values   # trade-level returns (signal quality)
     n   = len(pnl)
     if n < 2:
         return empty
@@ -85,11 +88,16 @@ def compute_metrics(trades_df: pd.DataFrame) -> dict:
     trades_per_year = n / years
     ann_factor = np.sqrt(trades_per_year)
 
-    pnl_std = pnl.std(ddof=1)
-    sharpe  = (pnl.mean() / pnl_std * ann_factor) if pnl_std > 0 else 0.0
+    # Sharpe/Sortino use pnl_on_equity (portfolio returns) when available
+    pnl_eq  = trades_df["pnl_on_equity"].values \
+              if "pnl_on_equity" in trades_df.columns else pnl
+    neg_eq  = pnl_eq[pnl_eq <= 0]
 
-    neg_std = losses.std(ddof=1) if len(losses) > 1 else pnl_std
-    sortino = (pnl.mean() / neg_std * ann_factor) if neg_std > 0 else sharpe
+    eq_std  = pnl_eq.std(ddof=1)
+    sharpe  = (pnl_eq.mean() / eq_std * ann_factor) if eq_std > 0 else 0.0
+
+    neg_std = neg_eq.std(ddof=1) if len(neg_eq) > 1 else eq_std
+    sortino = (pnl_eq.mean() / neg_std * ann_factor) if neg_std > 0 else sharpe
 
     # Drawdown
     eq = compute_equity_curve(trades_df)
@@ -103,10 +111,13 @@ def compute_metrics(trades_df: pd.DataFrame) -> dict:
         cur  = cur + 1 if v else 0
         dd_dur = max(dd_dur, cur)
 
-    # Binomial Z-test  H0: win_rate = 50 %
+    # One-sample t-test: H0: mean(pnl_on_equity) = 0  (one-tailed: is edge > 0?)
+    # Replaces binomial WR test which is misleading for trend-following strategies
+    # (low win-rate + high win/loss ratio strategies always fail WR > 50% test)
     if n >= 10:
-        z_stat  = (win_rate - 0.5) / np.sqrt(0.25 / n)
-        p_value = float(2.0 * (1.0 - stats.norm.cdf(abs(z_stat))))
+        t_stat, two_tail_p = stats.ttest_1samp(pnl_eq, 0.0)
+        z_stat  = float(t_stat)
+        p_value = float(two_tail_p / 2.0)   # one-tailed: mean > 0
     else:
         z_stat, p_value = 0.0, 1.0
 
@@ -352,6 +363,6 @@ def print_metrics(ticker: str, m: dict) -> None:
           f"Sortino: {m['sortino']:.2f}")
     print(f"  Max Drawdown   : {m['max_dd']:.1f} %   "
           f"Avg DD: {m['avg_dd']:.1f} %")
-    print(f"  Z-stat         : {m['z_stat']:.2f}   "
+    print(f"  Expect t-stat  : {m['z_stat']:.2f}   "
           f"p-value: {m['p_value']:.4f}"
           + ("  *** SIGNIFICANT ***" if m['p_value'] < 0.05 else ""))

@@ -33,7 +33,8 @@ def run_backtest(df: pd.DataFrame,
     Bar-by-bar backtest on a fully-prepared indicator DataFrame.
     Exits: MeshBreak / SL / TP only (no trailing stop).
     """
-    p = load_config().to_params_dict()
+    cfg = load_config()
+    p   = cfg.to_params_dict()
     if params:
         p.update(params)
 
@@ -59,6 +60,11 @@ def run_backtest(df: pd.DataFrame,
     pbs_tol     = float(p["pb_short_tol"])
     di_gap_min  = float(p["di_gap_min"])
     room_atr    = float(p["min_room_atr"])
+
+    # ── Position sizing constants (not varied by optimisation grid) ───────────
+    _risk_frac = cfg.risk_per_trade_pct / 100.0   # e.g. 0.02 for 2 %
+    _max_pos   = cfg.max_position_pct   / 100.0   # e.g. 0.20 for 20 %
+    _rtc       = _round_trip_cost()               # round-trip cost fraction
 
     # ── Numpy arrays for speed ────────────────────────────────────────────────
     n        = len(df)
@@ -92,9 +98,10 @@ def run_backtest(df: pd.DataFrame,
     entry_date = None
     entry_px   = 0.0
     entry_atr  = 0.0
-    sig_type   = ""
-    sl_px      = 0.0
-    tp_px      = 0.0
+    sig_type    = ""
+    sl_px       = 0.0
+    tp_px       = 0.0
+    position_pct = 0.0   # fraction of equity deployed in current trade
 
     trades: list[dict] = []
 
@@ -134,24 +141,29 @@ def run_backtest(df: pd.DataFrame,
             if exit_px is not None:
                 raw_pnl = (exit_px / entry_px - 1.0) if direction == "long" \
                           else (entry_px / exit_px - 1.0)
-                pnl_pct = (raw_pnl - _round_trip_cost()) * 100.0
+                # pnl_pct: return on the position (signal quality metric)
+                pnl_pct = (raw_pnl - _rtc) * 100.0
+                # pnl_on_equity: actual impact on account equity with position sizing
+                pnl_on_equity = (raw_pnl - _rtc) * position_pct * 100.0
 
                 entry_ts  = pd.Timestamp(entry_date)
                 exit_ts   = pd.Timestamp(dates[i])
                 bars_held = max((exit_ts - entry_ts).days, 1)
 
                 trades.append({
-                    "ticker":       ticker,
-                    "direction":    direction,
-                    "signal_type":  sig_type,
-                    "entry_date":   entry_ts,
-                    "exit_date":    exit_ts,
-                    "entry_price":  round(entry_px, 4),
-                    "exit_price":   round(exit_px, 4),
-                    "exit_reason":  exit_reason,
-                    "atr_at_entry": round(entry_atr, 4),
-                    "pnl_pct":      round(pnl_pct, 4),
-                    "bars_held":    bars_held,
+                    "ticker":        ticker,
+                    "direction":     direction,
+                    "signal_type":   sig_type,
+                    "entry_date":    entry_ts,
+                    "exit_date":     exit_ts,
+                    "entry_price":   round(entry_px, 4),
+                    "exit_price":    round(exit_px, 4),
+                    "exit_reason":   exit_reason,
+                    "atr_at_entry":  round(entry_atr, 4),
+                    "pnl_pct":       round(pnl_pct, 4),
+                    "pnl_on_equity": round(pnl_on_equity, 4),
+                    "position_pct":  round(position_pct * 100, 2),
+                    "bars_held":     bars_held,
                 })
                 in_pos = False
 
@@ -216,23 +228,27 @@ def run_backtest(df: pd.DataFrame,
                 new_sig, is_short = "BO-S", True
 
             if is_long:
-                in_pos     = True
-                direction  = "long"
-                entry_date = dates[i]
-                entry_px   = c
-                entry_atr  = at
-                sig_type   = new_sig
-                sl_px      = entry_px - at * sl_mult
-                tp_px      = entry_px + at * tp_long
+                in_pos      = True
+                direction   = "long"
+                entry_date  = dates[i]
+                entry_px    = c
+                entry_atr   = at
+                sig_type    = new_sig
+                sl_px       = entry_px - at * sl_mult
+                tp_px       = entry_px + at * tp_long
+                sl_dist_pct = (at * sl_mult) / entry_px
+                position_pct = min(_risk_frac / max(sl_dist_pct, 1e-6), _max_pos)
 
             elif is_short:
-                in_pos     = True
-                direction  = "short"
-                entry_date = dates[i]
-                entry_px   = c
-                entry_atr  = at
-                sig_type   = new_sig
-                sl_px      = entry_px + at * sl_mult
-                tp_px      = entry_px - at * tp_short
+                in_pos      = True
+                direction   = "short"
+                entry_date  = dates[i]
+                entry_px    = c
+                entry_atr   = at
+                sig_type    = new_sig
+                sl_px       = entry_px + at * sl_mult
+                tp_px       = entry_px - at * tp_short
+                sl_dist_pct = (at * sl_mult) / entry_px
+                position_pct = min(_risk_frac / max(sl_dist_pct, 1e-6), _max_pos)
 
     return trades

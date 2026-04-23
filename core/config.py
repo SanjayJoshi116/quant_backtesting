@@ -61,6 +61,11 @@ class StrategyConfig(BaseModel):
     min_bars:        int = Field(gt=0)
     cache_ttl_hours: int = Field(gt=0)
 
+    # ── Position sizing ───────────────────────────────────────────────────────
+    starting_capital:   float = Field(gt=0,  default=100000.0)
+    risk_per_trade_pct: float = Field(gt=0,  le=100, default=1.0)
+    max_position_pct:   float = Field(gt=0,  le=100, default=20.0)
+
     # ── Execution costs ───────────────────────────────────────────────────────
     commission_pct: float = Field(ge=0, default=0.0005)
     slippage_pct:   float = Field(ge=0, default=0.0005)
@@ -129,7 +134,7 @@ def load_config(path: Path | None = None) -> StrategyConfig:
 
     # Flatten nested YAML sections into a single dict
     flat: dict = {}
-    for section in ("exit", "filters", "entry", "data", "costs"):
+    for section in ("exit", "filters", "entry", "data", "sizing", "costs"):
         flat.update(raw.get(section, {}))
 
     # Rename 'period' → 'data_period' (avoid shadowing builtins)

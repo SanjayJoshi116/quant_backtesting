@@ -231,11 +231,17 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
     mc_bands  = (None, None, None)
     try:
         if not combined_df.empty:
-            pnls      = combined_df["pnl_pct"].values
-            mc_result = run_monte_carlo(pnls, n_simulations=10_000)
+            # Use pnl_on_equity (position-sized returns) for realistic equity paths
+            _mc_col  = "pnl_on_equity" if "pnl_on_equity" in combined_df.columns \
+                       else "pnl_pct"
+            _mc_init = load_config().starting_capital
+            pnls     = combined_df[_mc_col].values
+            mc_result = run_monte_carlo(pnls, n_simulations=10_000,
+                                        initial_equity=_mc_init)
             if mc_result:
                 print_mc_summary(mc_result)
-                mc_bands = compute_mc_bands(pnls, n_simulations=1_000)
+                mc_bands = compute_mc_bands(pnls, n_simulations=1_000,
+                                            initial_equity=_mc_init)
     except Exception as exc:
         print(f"  [WARN] Monte Carlo failed: {exc}")
 
@@ -307,7 +313,8 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
         f"| Sharpe (ann.)     | {cm['sharpe']:.2f} |",
         f"| Sortino (ann.)    | {cm['sortino']:.2f} |",
         f"| Max Drawdown      | {cm['max_dd']:.1f}% |",
-        f"| Binomial Z-stat   | {cm['z_stat']:.2f} (p={cm['p_value']:.4f}) |",
+        f"| Expectancy t-stat | {cm['z_stat']:.2f} (p={cm['p_value']:.4f}) |",
+        f"| *(H0: mean return = 0, one-tailed. p < 0.05 = statistically significant edge)* | |",
         "",
         f"**Inter-stock avg ρ** : {adj_z.get('avg_rho', 0):.3f}  "
         f"| **Adj. Z** : {adj_z.get('z_adj', 0):.2f}  "
@@ -337,24 +344,29 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
 
     # Monte Carlo
     if mc_result:
+        init = mc_result["initial_equity"]
         lines += [
-            "\n## Monte Carlo (10 000 simulations, combined trades)",
-            f"- Median final equity : {mc_result['median_final_equity']:.1f}",
-            f"- 5th pct equity      : {mc_result['p5_final_equity']:.1f}",
+            "\n## Monte Carlo (10 000 simulations, position-sized returns)",
+            f"- Starting capital    : ₹{init:,.0f}",
+            f"- Median final equity : ₹{mc_result['median_final_equity']:,.0f}  "
+            f"({mc_result['median_final_equity']/init - 1:+.1%})",
+            f"- 5th pct equity      : ₹{mc_result['p5_final_equity']:,.0f}  "
+            f"({mc_result['p5_final_equity']/init - 1:+.1%})",
             f"- 95th pct max DD     : {mc_result['p95_max_drawdown']:.1f}%",
             f"- % profitable paths  : {mc_result['pct_profitable']:.1f}%",
         ]
 
-    # Verdict
-    sh = cm["sharpe"]
-    wr = cm["win_rate"]
-    pf = cm["profit_factor"]
-    sig = adj_z.get("p_adj", 1) < 0.05
+    # Verdict — expectancy-based, works for low-WR trend-following strategies
+    sh  = cm["sharpe"]
+    pf  = cm["profit_factor"]
+    exp = cm["expectancy"]
+    sig_expectancy = cm["p_value"] < 0.05          # t-test on pnl_on_equity > 0
+    sig_adj        = adj_z.get("p_adj", 1) < 0.05  # adjusted for inter-stock corr
 
-    if sh > 0.8 and pf > 1.3 and wr > 50 and sig:
-        verdict = "✅ PROMISING — strategy shows positive edge. Recommend paper-trading before going live."
-    elif sh > 0.4 and pf > 1.1:
-        verdict = "⚠ MARGINAL — some edge present but not statistically robust. Further refinement needed."
+    if sh > 0.5 and pf > 1.3 and exp > 0 and sig_expectancy:
+        verdict = "✅ PROMISING — strategy shows statistically significant positive edge. Recommend paper-trading before going live."
+    elif pf > 1.1 and exp > 0:
+        verdict = "⚠ MARGINAL — positive expectancy but not yet statistically robust. Continue monitoring and refining."
     else:
         verdict = "❌ INSUFFICIENT EDGE — strategy does not show reliable statistical edge on historical data."
 

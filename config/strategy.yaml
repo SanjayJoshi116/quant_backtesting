@@ -5,7 +5,7 @@
 # Active values = WFO-optimised (walk-forward 2016-2020 IS, 2021-2026 OOS).
 # Default/baseline values shown in comments for reference.
 
-config_version: "1.0"
+config_version: "1.1"
 
 # ── Exit / Risk management ────────────────────────────────────────────────────
 exit:
@@ -15,7 +15,7 @@ exit:
 
 # ── Trend filters ─────────────────────────────────────────────────────────────
 filters:
-  adx_long:     12       # minimum ADX to take a long          (default 15)
+  adx_long:     18       # minimum ADX to take a long          (default 15, was 12 in v1.0)
   adx_short:    20       # minimum ADX to take a short         (default 25)
   di_gap_min:   5.0      # DI- must lead DI+ by this many pts (short only)
   min_room_atr: 3.0      # minimum ATR room-to-fall (short only)
@@ -54,6 +54,14 @@ data:
   period:          "2y"  # yfinance download period (needs ≥ 250 bars for indicators)
   min_bars:        260   # skip ticker if fewer bars available after download
   cache_ttl_hours: 24    # re-fetch if cached CSV is older than this many hours
+
+# ── Position sizing ───────────────────────────────────────────────────────────
+# Risk-based: each trade risks exactly risk_per_trade_pct % of current equity.
+# Position size = (equity × risk_pct) / (entry − SL), capped at max_position_pct.
+sizing:
+  starting_capital:   100000  # INR starting equity for backtest equity curve
+  risk_per_trade_pct: 1.5     # % of equity risked per trade (was 2.0 in v1.0)
+  max_position_pct:   20.0    # hard cap: never deploy more than this % in one trade
 
 # ── Execution costs (informational — used by backtester) ─────────────────────
 costs:
