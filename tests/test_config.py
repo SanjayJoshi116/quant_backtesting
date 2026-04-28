@@ -17,9 +17,8 @@ def _valid_kwargs() -> dict:
     """Return a complete set of valid StrategyConfig kwargs."""
     return dict(
         sl_mult=1.5, tp_mult_long=3.5, tp_mult_short=2.25,
-        adx_long=12, adx_short=20, di_gap_min=5.0, min_room_atr=3.0,
+        adx_long=18, adx_short=20, di_gap_min=5.0, min_room_atr=3.0,
         rsi_pb_lo=35, rsi_pb_hi=58, pb_tol=1.008,
-        rsi_pb50_lo=38, rsi_pb50_hi=55, pb50_tol=1.005,
         rsi_bo_lo=48, rsi_bo_hi=75,
         rsi_pbs_lo=45, rsi_pbs_hi=60, pb_short_tol=0.997,
         rsi_bos_lo=30, rsi_bos_hi=50,
@@ -46,7 +45,7 @@ def test_valid_kwargs_builds_config():
     cfg = StrategyConfig(**_valid_kwargs())
     assert cfg.sl_mult == 1.5
     assert cfg.tp_mult_long == 3.5
-    assert cfg.adx_long == 12
+    assert cfg.adx_long == 18
 
 
 def test_to_params_dict_has_all_keys():
@@ -56,13 +55,13 @@ def test_to_params_dict_has_all_keys():
         "sl_mult", "tp_mult_long", "tp_mult_short",
         "adx_long", "adx_short",
         "rsi_pb_lo", "rsi_pb_hi", "rsi_bo_lo", "rsi_bo_hi",
-        "rsi_pb50_lo", "rsi_pb50_hi",
         "rsi_pbs_lo", "rsi_pbs_hi", "rsi_bos_lo", "rsi_bos_hi",
         "vol_mult_long", "vol_mult_short",
-        "pb_tol", "pb50_tol", "pb_short_tol",
+        "pb_tol", "pb_short_tol",
         "di_gap_min", "min_room_atr",
     }
     assert required <= set(p.keys())
+    assert "rsi_pb50_lo" not in p, "PB50-L removed — pb50 keys must not be in params dict"
 
 
 def test_to_params_dict_values_match_config():
@@ -77,7 +76,6 @@ def test_to_params_dict_values_match_config():
 
 @pytest.mark.parametrize("lo_field,hi_field", [
     ("rsi_pb_lo",  "rsi_pb_hi"),
-    ("rsi_pb50_lo","rsi_pb50_hi"),
     ("rsi_bo_lo",  "rsi_bo_hi"),
     ("rsi_pbs_lo", "rsi_pbs_hi"),
     ("rsi_bos_lo", "rsi_bos_hi"),
@@ -141,9 +139,10 @@ def test_rsi_out_of_range_raises():
 # ── Active config values match strategy.yaml ─────────────────────────────────
 
 def test_active_config_wfo_values():
-    """WFO-optimised params must be active (not the old defaults)."""
+    """v1.2 params: WFO + manually tuned improvements."""
     cfg = load_config()
-    assert cfg.sl_mult == 1.5,       "Expected WFO sl_mult=1.5"
-    assert cfg.tp_mult_long == 3.5,  "Expected WFO tp_mult_long=3.5"
-    assert cfg.adx_long == 12,       "Expected WFO adx_long=12"
-    assert cfg.rsi_pb_lo == 35,      "Expected WFO rsi_pb_lo=35"
+    assert cfg.sl_mult == 1.5,       "Expected sl_mult=1.5"
+    assert cfg.tp_mult_long == 3.5,  "Expected tp_mult_long=3.5"
+    assert cfg.adx_long == 18,       "Expected adx_long=18 (tightened in v1.1)"
+    assert cfg.rsi_pb_lo == 35,      "Expected rsi_pb_lo=35"
+    assert not hasattr(cfg, "rsi_pb50_lo"), "PB50-L removed in v1.2"

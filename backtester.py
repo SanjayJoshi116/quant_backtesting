@@ -11,7 +11,7 @@ Design notes:
   • On daily bars the exit trigger uses the bar CLOSE (conservative).
     SL/TP fills recorded at the level itself, not at close.
   • Mesh-break exit fills at close.
-  • Signal priority (long): PB-L > PB50-L > BO-L.
+  • Signal priority (long): PB-L > BASE-BO > BO-L.
   • One position at a time per ticker.
 """
 
@@ -28,7 +28,8 @@ def _round_trip_cost() -> float:
 # ── Main backtester ────────────────────────────────────────────────────────────
 def run_backtest(df: pd.DataFrame,
                  params: dict | None = None,
-                 ticker: str = "") -> list[dict]:
+                 ticker: str = "",
+                 market_regime: "pd.Series | None" = None) -> list[dict]:
     """
     Bar-by-bar backtest on a fully-prepared indicator DataFrame.
     Exits: MeshBreak / SL / TP only (no trailing stop).
@@ -47,8 +48,6 @@ def run_backtest(df: pd.DataFrame,
     rsi_pb_hi   = float(p["rsi_pb_hi"])
     rsi_bo_lo   = float(p["rsi_bo_lo"])
     rsi_bo_hi   = float(p["rsi_bo_hi"])
-    rsi_pb50_lo = float(p["rsi_pb50_lo"])
-    rsi_pb50_hi = float(p["rsi_pb50_hi"])
     rsi_pbs_lo  = float(p["rsi_pbs_lo"])
     rsi_pbs_hi  = float(p["rsi_pbs_hi"])
     rsi_bos_lo  = float(p["rsi_bos_lo"])
@@ -56,7 +55,6 @@ def run_backtest(df: pd.DataFrame,
     vol_ml      = float(p["vol_mult_long"])
     vol_ms      = float(p["vol_mult_short"])
     pb_tol      = float(p["pb_tol"])
-    pb50_tol    = float(p["pb50_tol"])
     pbs_tol     = float(p["pb_short_tol"])
     di_gap_min  = float(p["di_gap_min"])
     room_atr    = float(p["min_room_atr"])
@@ -88,8 +86,10 @@ def run_backtest(df: pd.DataFrame,
     cbear_a  = df["candle_bear"].values.astype(bool)
     bocb_a   = df["bo_candle_bull"].values.astype(bool)
     bocs_a   = df["bo_candle_bear"].values.astype(bool)
-    hh12_a   = df["highest_high_12"].values.astype(np.float64)
-    ll12_a   = df["lowest_low_12"].values.astype(np.float64)
+    hh12_a    = df["highest_high_12"].values.astype(np.float64)
+    ll12_a    = df["lowest_low_12"].values.astype(np.float64)
+    base_bo_a = df["base_breakout"].values.astype(bool) \
+                if "base_breakout" in df.columns else np.zeros(n, dtype=bool)
     ll50_a   = df["lowest_low_50"].values.astype(np.float64)
 
     # ── Position state ────────────────────────────────────────────────────────
@@ -196,15 +196,14 @@ def run_backtest(df: pd.DataFrame,
                     cbull_a[i] and adx_ok_l and vol_ok_l):
                 new_sig, is_long = "PB-L", True
 
-            # PB50-L
-            elif (bull and
-                    low_a[i] <= e50 * pb50_tol and c > e50 and
-                    c > e21 * 0.99 and
-                    rsi_pb50_lo <= r <= rsi_pb50_hi and
-                    cbull_a[i] and adx_ok_l and vol_ok_l):
-                new_sig, is_long = "PB50-L", True
+            # BASE-BO — flat base breakout (higher quality, checked before generic BO-L)
+            elif (bull and base_bo_a[i] and
+                    rsi_bo_lo <= r <= rsi_bo_hi and
+                    bocb_a[i] and adx_ok_l and
+                    v >= vs * vol_ml * 1.2):    # require stronger volume on base breaks
+                new_sig, is_long = "BASE-BO", True
 
-            # BO-L
+            # BO-L — generic 12-bar high breakout
             elif (bull and
                     not np.isnan(hh12_a[i]) and c > hh12_a[i] and
                     rsi_bo_lo <= r <= rsi_bo_hi and
@@ -226,6 +225,15 @@ def run_backtest(df: pd.DataFrame,
                     bocs_a[i] and adx_ok_s and vol_ok_s and
                     di_dom and room_ok):
                 new_sig, is_short = "BO-S", True
+
+            # Regime gate: block new long entries when Nifty is below EMA200
+            if is_long and market_regime is not None:
+                try:
+                    is_long = bool(market_regime.asof(pd.Timestamp(dates[i])))
+                    if not is_long:
+                        new_sig = ""
+                except Exception:
+                    pass
 
             if is_long:
                 in_pos      = True

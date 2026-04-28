@@ -1,6 +1,6 @@
 # NSE Swing Strategy — Backtest Summary Report
 
-Generated on: 2026-04-23 21:51
+Generated on: 2026-04-28 17:22
 
 ## Universe
 HDFCBANK, INFY, ICICIBANK, SBIN, WIPRO, SUNPHARMA, LT, BHARTIARTL, DIXON, BSE, CANBK, BEL, HAL, TITAN, BAJFINANCE, HCLTECH, TRENT, PERSISTENT, SIEMENS, RELIANCE, NTPC, ONGC, POWERGRID, ITC, NESTLEIND, BRITANNIA, M&M, MARUTI, HEROMOTOCO, TATASTEEL, JINDALSTEL, HINDALCO, COALINDIA, CIPLA, DRREDDY, APOLLOHOSP, ETERNAL, TATAELXSI, KPITTECH, KOTAKBANK, AXISBANK, INDUSINDBK, BAJAJFINSV, CHOLAFIN, MUTHOOTFIN, TCS, TECHM, MPHASIS, LTIM, COFORGE, OFSS, ABB, BHEL, CUMMINSIND, THERMAX, POLYCAB, KEI, PIDILITIND, AARTIIND, NAVINFLUOR, ALKYLAMINE, HAVELLS, VOLTAS, VGUARD, DMART, NYKAA, TORNTPHARM, AUROPHARMA, LALPATHLAB, IPCALAB, BPCL, IOC, GAIL, TATAPOWER, ADANIGREEN, ADANIPORTS, HDFCLIFE, SBILIFE, ICICIGI, ULTRACEMCO, INDUSTOWER, IDEA
@@ -9,26 +9,26 @@ HDFCBANK, INFY, ICICIBANK, SBIN, WIPRO, SUNPHARMA, LT, BHARTIARTL, DIXON, BSE, C
 
 | Metric            | Value           |
 |-------------------|-----------------|
-| Total Trades      | 2076 |
+| Total Trades      | 2077 |
 | Win Rate          | 42.6% |
-| Avg Win           | +9.41% |
-| Avg Loss          | -4.14% |
-| Win/Loss Ratio    | 2.27 |
-| Profit Factor     | 1.68 |
-| Expectancy/trade  | +1.63% |
-| Sharpe (ann.)     | 3.41 |
-| Sortino (ann.)    | 19.17 |
-| Max Drawdown      | -35.9% |
-| Expectancy t-stat | 10.51 (p=0.0000) |
+| Avg Win           | +9.40% |
+| Avg Loss          | -4.19% |
+| Win/Loss Ratio    | 2.24 |
+| Profit Factor     | 1.66 |
+| Expectancy/trade  | +1.59% |
+| Sharpe (ann.)     | 3.35 |
+| Sortino (ann.)    | 18.34 |
+| Max Drawdown      | -34.3% |
+| Expectancy t-stat | 10.32 (p=0.0000) |
 | *(H0: mean return = 0, one-tailed. p < 0.05 = statistically significant edge)* | |
 
-**Inter-stock avg ρ** : 0.033  | **Adj. Z** : -3.52  | **Adj. p** : 0.0004
+**Inter-stock avg ρ** : 0.031  | **Adj. Z** : -3.61  | **Adj. p** : 0.0003
 
 ## Monte Carlo (10 000 simulations, position-sized returns)
 - Starting capital    : ₹100,000
-- Median final equity : ₹66,353,863  (+66253.9%)
-- 5th pct equity      : ₹23,962,883  (+23862.9%)
-- 95th pct max DD     : -10.5%
+- Median final equity : ₹60,790,384  (+60690.4%)
+- 5th pct equity      : ₹21,451,165  (+21351.2%)
+- 95th pct max DD     : -10.7%
 - % profitable paths  : 100.0%
 
 ## Overall Verdict

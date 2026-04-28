@@ -20,6 +20,7 @@ import pandas as pd
 from ta.trend import EMAIndicator, ADXIndicator
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange
+from core.patterns import add_pattern_columns
 
 
 # ── Weekly EMA50 ───────────────────────────────────────────────────────────────
@@ -134,5 +135,8 @@ def prepare_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     # NOT shifted: room_to_fall needs current bar's rolling low
     df["lowest_low_50"] = df["Low"].rolling(window=50, min_periods=50).min()
+
+    # ── Chart patterns: swing S/R + flat base (requires ATR, computed above) ──
+    add_pattern_columns(df)
 
     return df

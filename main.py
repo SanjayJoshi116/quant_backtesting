@@ -81,10 +81,16 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
         except Exception as exc:
             print(f"  [SKIP] {ticker}: indicator error — {exc}")
 
-    nifty_ind = None
+    nifty_ind    = None
+    nifty_regime = None
     if nifty_raw is not None:
         try:
             nifty_ind = prepare_indicators(nifty_raw)
+            if load_config().regime_enabled:
+                # Bull regime: Nifty above its 200-day EMA
+                nifty_regime = (nifty_ind["Close"] > nifty_ind["EMA200"])
+                pct_bull = nifty_regime.mean() * 100
+                print(f"  Nifty regime filter : {pct_bull:.0f}% of bars in bull regime (Nifty > EMA200)")
         except Exception:
             pass
 
@@ -96,7 +102,8 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
 
     for ticker in tqdm(available, desc="  Backtesting", ncols=70):
         try:
-            trades = run_backtest(ind_dfs[ticker], ticker=ticker)
+            trades = run_backtest(ind_dfs[ticker], ticker=ticker,
+                                  market_regime=nifty_regime)
             tdf    = pd.DataFrame(trades) if trades else pd.DataFrame()
 
             # Save per-ticker CSV

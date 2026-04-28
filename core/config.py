@@ -34,11 +34,6 @@ class StrategyConfig(BaseModel):
     rsi_pb_hi: int   = Field(ge=0, le=100)
     pb_tol:    float = Field(gt=1.0)
 
-    # ── Entry: pullback EMA50 (PB50-L) ───────────────────────────────────────
-    rsi_pb50_lo: int   = Field(ge=0, le=100)
-    rsi_pb50_hi: int   = Field(ge=0, le=100)
-    pb50_tol:    float = Field(gt=1.0)
-
     # ── Entry: breakout (BO-L) ────────────────────────────────────────────────
     rsi_bo_lo: int = Field(ge=0, le=100)
     rsi_bo_hi: int = Field(ge=0, le=100)
@@ -66,6 +61,10 @@ class StrategyConfig(BaseModel):
     risk_per_trade_pct: float = Field(gt=0,  le=100, default=1.0)
     max_position_pct:   float = Field(gt=0,  le=100, default=20.0)
 
+    # ── Market regime filter ──────────────────────────────────────────────────
+    regime_enabled:    bool = True
+    nifty_ema_period:  int  = Field(gt=0, default=200)
+
     # ── Execution costs ───────────────────────────────────────────────────────
     commission_pct: float = Field(ge=0, default=0.0005)
     slippage_pct:   float = Field(ge=0, default=0.0005)
@@ -74,7 +73,6 @@ class StrategyConfig(BaseModel):
     def _check_rsi_ranges(self) -> "StrategyConfig":
         pairs = [
             ("rsi_pb_lo",  "rsi_pb_hi"),
-            ("rsi_pb50_lo","rsi_pb50_hi"),
             ("rsi_bo_lo",  "rsi_bo_hi"),
             ("rsi_pbs_lo", "rsi_pbs_hi"),
             ("rsi_bos_lo", "rsi_bos_hi"),
@@ -98,8 +96,6 @@ class StrategyConfig(BaseModel):
             "rsi_pb_hi":      self.rsi_pb_hi,
             "rsi_bo_lo":      self.rsi_bo_lo,
             "rsi_bo_hi":      self.rsi_bo_hi,
-            "rsi_pb50_lo":    self.rsi_pb50_lo,
-            "rsi_pb50_hi":    self.rsi_pb50_hi,
             "rsi_pbs_lo":     self.rsi_pbs_lo,
             "rsi_pbs_hi":     self.rsi_pbs_hi,
             "rsi_bos_lo":     self.rsi_bos_lo,
@@ -107,7 +103,6 @@ class StrategyConfig(BaseModel):
             "vol_mult_long":  self.vol_mult_long,
             "vol_mult_short": self.vol_mult_short,
             "pb_tol":         self.pb_tol,
-            "pb50_tol":       self.pb50_tol,
             "pb_short_tol":   self.pb_short_tol,
             "di_gap_min":     self.di_gap_min,
             "min_room_atr":   self.min_room_atr,
@@ -134,7 +129,7 @@ def load_config(path: Path | None = None) -> StrategyConfig:
 
     # Flatten nested YAML sections into a single dict
     flat: dict = {}
-    for section in ("exit", "filters", "entry", "data", "sizing", "costs"):
+    for section in ("exit", "filters", "entry", "data", "regime", "sizing", "costs"):
         flat.update(raw.get(section, {}))
 
     # Rename 'period' → 'data_period' (avoid shadowing builtins)

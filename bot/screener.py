@@ -14,6 +14,29 @@ from bot.universe import WATCHLIST, NEGATIVE_EDGE, get_sector
 from bot.signal_engine import detect
 from core.data import fetch_or_load
 from core.logging import log_signal
+from core.config import load_config
+from core.scorecard import get_signal_stats
+
+_NIFTY = "^NSEI"
+
+
+def _market_regime() -> bool:
+    """
+    Return True (bull) if Nifty50 is above its EMA200 on the latest bar.
+    Returns True on any error so screener degrades gracefully.
+    """
+    try:
+        cfg = load_config()
+        if not cfg.regime_enabled:
+            return True
+        from indicators import prepare_indicators
+        df = fetch_or_load(_NIFTY)
+        if df is None or len(df) < cfg.nifty_ema_period + 10:
+            return True
+        ind = prepare_indicators(df)
+        return bool(ind["Close"].iloc[-1] > ind["EMA200"].iloc[-1])
+    except Exception:
+        return True
 
 
 def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
@@ -32,6 +55,12 @@ def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
     """
     if watchlist is None:
         watchlist = WATCHLIST
+
+    # Check market regime once before scanning the entire universe
+    bull_regime = _market_regime()
+    if verbose:
+        status = "BULL ✓" if bull_regime else "BEAR ⚠ — long signals flagged"
+        print(f"  Market regime (Nifty vs EMA200): {status}")
 
     alerts: list[dict] = []
     failed: list[str]  = []
@@ -52,8 +81,14 @@ def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
             continue
 
         for sig in signals:
-            sig["negative_edge"] = (ticker in NEGATIVE_EDGE)
-            sig["sector"] = get_sector(ticker)
+            sig["negative_edge"]       = (ticker in NEGATIVE_EDGE)
+            sig["sector"]              = get_sector(ticker)
+            sig["bear_regime_warning"] = (
+                not bull_regime and sig["direction"] == "LONG"
+            )
+            # Historical scorecard for this ticker + signal type
+            hist = get_signal_stats(ticker, sig["signal_type"])
+            sig["hist"] = hist   # None if no history yet
             sig["signal_id"] = log_signal(sig)
             alerts.append(sig)
 

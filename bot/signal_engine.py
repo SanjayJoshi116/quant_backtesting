@@ -21,11 +21,11 @@ from core.config import load_config
 
 # ── Signal type metadata ───────────────────────────────────────────────────────
 SIGNAL_META = {
-    "PB-L":   {"label": "Pullback to EMA 21",  "direction": "LONG",  "emoji": "🟢"},
-    "PB50-L": {"label": "Pullback to EMA 50",  "direction": "LONG",  "emoji": "🟢"},
-    "BO-L":   {"label": "Breakout above high", "direction": "LONG",  "emoji": "🚀"},
-    "PB-S":   {"label": "Pullback to EMA 21",  "direction": "SHORT", "emoji": "🔴"},
-    "BO-S":   {"label": "Breakdown below low", "direction": "SHORT", "emoji": "🔻"},
+    "PB-L":    {"label": "Pullback to EMA 21",       "direction": "LONG",  "emoji": "🟢"},
+    "BO-L":    {"label": "Breakout above high",       "direction": "LONG",  "emoji": "🚀"},
+    "BASE-BO": {"label": "Flat base breakout",        "direction": "LONG",  "emoji": "📦"},
+    "PB-S":    {"label": "Pullback to EMA 21",        "direction": "SHORT", "emoji": "🔴"},
+    "BO-S":    {"label": "Breakdown below low",       "direction": "SHORT", "emoji": "🔻"},
 }
 
 
@@ -98,6 +98,11 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
     wbear = bool(last["weekly_bear"])
     green = bool(last["green_mesh"])
 
+    # Pattern columns
+    near_sup   = bool(last.get("near_support",   False))
+    base_bo    = bool(last.get("base_breakout",  False))
+    base_q     = int(last.get("base_quality",    0))
+
     # Skip bar if any critical indicator is NaN
     if any(math.isnan(x) for x in [e200, rsi, adx, atr, vsma, hh12, ll50]):
         return []
@@ -120,16 +125,16 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
         signals.append(_build(ticker, "PB-L", c, atr, rsi, adx, v, vsma,
                                e21, e50, e200, wbull, green, df, p))
 
-    # ── PB50-L  (Pullback to EMA50) ────────────────────────────────────────────
-    elif (bull and
-            lo <= e50 * p["pb50_tol"] and c > e50 and
-            c > e21 * 0.99 and
-            p["rsi_pb50_lo"] <= rsi <= p["rsi_pb50_hi"] and
-            cbull and adx_ok_l and vol_ok_l):
-        signals.append(_build(ticker, "PB50-L", c, atr, rsi, adx, v, vsma,
-                               e21, e50, e200, wbull, green, df, p))
+    # ── BASE-BO  (Flat base breakout) — checked before generic BO-L ─────────────
+    elif (bull and base_bo and
+            p["rsi_bo_lo"] <= rsi <= p["rsi_bo_hi"] and
+            bocb and adx_ok_l and
+            v >= vsma * p["vol_mult_long"] * 1.2):   # require stronger volume on base breaks
+        signals.append(_build(ticker, "BASE-BO", c, atr, rsi, adx, v, vsma,
+                               e21, e50, e200, wbull, green, df, p,
+                               base_quality=base_q))
 
-    # ── BO-L  (Breakout) ───────────────────────────────────────────────────────
+    # ── BO-L  (Breakout above 12-bar high) ────────────────────────────────────
     elif (bull and not math.isnan(hh12) and c > hh12 and
             p["rsi_bo_lo"] <= rsi <= p["rsi_bo_hi"] and
             bocb and adx_ok_l and vol_ok_l):
@@ -158,7 +163,8 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
 
 # ── Builder helper ─────────────────────────────────────────────────────────────
 def _build(ticker, sig_type, c, atr, rsi, adx, v, vsma,
-           e21, e50, e200, wbull, green_mesh, df, p, short=False) -> dict:
+           e21, e50, e200, wbull, green_mesh, df, p,
+           short=False, base_quality=0) -> dict:
 
     sl_mult = p["sl_mult"]
     tp_mult = p["tp_mult_short"] if short else p["tp_mult_long"]
@@ -171,45 +177,81 @@ def _build(ticker, sig_type, c, atr, rsi, adx, v, vsma,
         tp_price = round(c + atr * tp_mult, 2)
 
     rr_ratio = round(abs(tp_price - c) / max(abs(c - sl_price), 0.01), 2)
+    sl_pct   = round((sl_price / c - 1) * 100, 2)
+    tp_pct   = round((tp_price / c - 1) * 100, 2)
 
-    sl_pct = round((sl_price / c - 1) * 100, 2)
-    tp_pct = round((tp_price / c - 1) * 100, 2)
+    last      = df.iloc[-1]
+    bull_trend = bool(last["bull_trend"])
+    near_sup   = bool(last.get("near_support", False))
 
-    # Signal score (0 – 6)
-    bull_trend = bool(df.iloc[-1]["bull_trend"])
-    score = sum([
-        1 if bull_trend                                       else 0,   # trend
-        1 if adx >= p["adx_long"]                            else 0,   # ADX
-        1 if v >= vsma * p["vol_mult_long"]                  else 0,   # volume
-        1 if p["rsi_pb_lo"] <= rsi <= p["rsi_pb_hi"]         else 0,   # RSI
-        1 if bool(df.iloc[-1]["candle_bull"])                 else 0,   # candle
-        1 if wbull                                            else 0,   # weekly
-    ])
+    # Signal score (0–7)
+    # BASE-BO gets extra points from base_quality (0-3) instead of standard RSI check
+    if sig_type == "BASE-BO":
+        score = sum([
+            1 if bull_trend                         else 0,   # trend
+            1 if adx >= p["adx_long"]               else 0,   # ADX strength
+            1 if v >= vsma * p["vol_mult_long"]      else 0,   # volume
+            1 if wbull                               else 0,   # weekly trend
+            1 if near_sup                            else 0,   # at support
+            min(base_quality, 2),                             # base quality (0-2)
+        ])
+    else:
+        score = sum([
+            1 if bull_trend                                   else 0,   # trend
+            1 if adx >= p["adx_long"]                        else 0,   # ADX
+            1 if v >= vsma * p["vol_mult_long"]               else 0,   # volume
+            1 if p["rsi_pb_lo"] <= rsi <= p["rsi_pb_hi"]     else 0,   # RSI in range
+            1 if bool(last["candle_bull"])                    else 0,   # candle
+            1 if wbull                                        else 0,   # weekly
+            1 if near_sup                                     else 0,   # at support level
+        ])
 
     mb = _mesh_bars(df["EMA21"], df["EMA50"])
 
+    # ── Intraday move on signal bar (timing quality) ─────────────────────────
+    bar_open = float(df["Open"].iloc[-1])
+    intraday_move_pct = round((c - bar_open) / bar_open * 100, 1)
+
+    # ── % drawdown from 52-week high ─────────────────────────────────────────
+    recent_high = float(df["High"].rolling(252, min_periods=20).max().iloc[-1])
+    pct_from_high = round((c - recent_high) / recent_high * 100, 1)
+
+    # ── S/R test count — how many times has price tested the current support ─
+    sr_test_count = 0
+    sr_level = last.get("last_pivot_low", None)
+    if sr_level and not math.isnan(float(sr_level)):
+        lvl = float(sr_level)
+        tol = lvl * 0.015   # 1.5% zone around the level
+        sr_test_count = int(
+            ((df["Low"].iloc[-200:] >= lvl - tol) &
+             (df["Low"].iloc[-200:] <= lvl + tol)).sum()
+        )
+
     return {
-        "ticker":       ticker,
-        "signal_type":  sig_type,
-        "label":        SIGNAL_META[sig_type]["label"],
-        "direction":    SIGNAL_META[sig_type]["direction"],
-        "emoji":        SIGNAL_META[sig_type]["emoji"],
-        "date":         df.index[-1].strftime("%d %b %Y"),
-        "entry":        round(c, 2),
-        "sl":           sl_price,
-        "tp":           tp_price,
-        "sl_pct":       sl_pct,
-        "tp_pct":       tp_pct,
-        "rr":           rr_ratio,
-        "atr":          round(atr, 2),
-        "rsi":          round(rsi, 1),
-        "adx":          round(adx, 1),
-        "vol_ratio":    round(v / vsma, 2),
-        "ema21":        round(e21, 2),
-        "ema50":        round(e50, 2),
-        "ema200":       round(e200, 2),
-        "weekly_bull":  wbull,
-        "green_mesh":   green_mesh,
-        "mesh_bars":    mb,
-        "score":        score,
+        "ticker":         ticker,
+        "signal_type":    sig_type,
+        "label":          SIGNAL_META[sig_type]["label"],
+        "direction":      SIGNAL_META[sig_type]["direction"],
+        "emoji":          SIGNAL_META[sig_type]["emoji"],
+        "date":           df.index[-1].strftime("%d %b %Y"),
+        "entry":          round(c, 2),
+        "sl":             sl_price,
+        "tp":             tp_price,
+        "sl_pct":         sl_pct,
+        "tp_pct":         tp_pct,
+        "rr":             rr_ratio,
+        "atr":            round(atr, 2),
+        "rsi":            round(rsi, 1),
+        "adx":            round(adx, 1),
+        "vol_ratio":      round(v / vsma, 2),
+        "ema21":          round(e21, 2),
+        "ema50":          round(e50, 2),
+        "ema200":         round(e200, 2),
+        "weekly_bull":    wbull,
+        "green_mesh":     green_mesh,
+        "mesh_bars":      mb,
+        "score":          score,
+        "pct_from_high":      pct_from_high,
+        "sr_test_count":      sr_test_count,
+        "intraday_move_pct":  intraday_move_pct,
     }

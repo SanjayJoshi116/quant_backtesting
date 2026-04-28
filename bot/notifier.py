@@ -28,6 +28,108 @@ _MUTED  = "#a0aec0"
 _WHITE  = "#f7fafc"
 
 
+# ── Intelligence row helpers ──────────────────────────────────────────────────
+
+def _timing_row(sig: dict) -> str:
+    """Signal-day move — warns when the stock already ran before signal fired."""
+    move = sig.get("intraday_move_pct")
+    if move is None:
+        return ""
+    abs_move = abs(move)
+    if abs_move < 1.5:
+        color, label = _GREEN,  "Good timing — early signal"
+    elif abs_move < 3.5:
+        color, label = _ORANGE, "Moderate — stock already moved"
+    else:
+        color, label = _RED,    "Late entry risk — big move already happened"
+    return f"""
+      <tr>
+        <td style="padding:3px 16px;font-size:12px;color:{_MUTED};">Signal-day move</td>
+        <td style="padding:3px 16px;text-align:right;font-size:12px;">
+          <span style="color:{color};font-weight:600;">{move:+.1f}%</span>
+          <span style="color:{_MUTED};font-size:11px;"> — {label}</span>
+        </td>
+      </tr>"""
+
+
+def _pullback_row(sig: dict) -> str:
+    """% drawdown from 52-week high with colour coding."""
+    pfh = sig.get("pct_from_high")
+    if pfh is None:
+        return ""
+    color  = _GREEN  if pfh <= -5  and pfh > -15 else \
+             _ORANGE if pfh <= -15 and pfh > -25 else \
+             _RED    if pfh < -25  else _MUTED
+    label  = "Healthy pullback" if -15 < pfh <= -5 else \
+             "Deep pullback"    if -25 < pfh <= -15 else \
+             "Extended drop"    if pfh <= -25 else "Near recent high"
+    return f"""
+      <tr>
+        <td style="padding:3px 16px;font-size:12px;color:{_MUTED};">From 52-week high</td>
+        <td style="padding:3px 16px;text-align:right;font-size:12px;">
+          <span style="color:{color};font-weight:600;">{pfh:+.1f}%</span>
+          <span style="color:{_MUTED};font-size:11px;"> — {label}</span>
+        </td>
+      </tr>"""
+
+
+def _sr_row(sig: dict) -> str:
+    """S/R level test count."""
+    n = sig.get("sr_test_count", 0)
+    if n == 0:
+        return ""
+    color = _GREEN if n >= 3 else _ORANGE if n >= 2 else _MUTED
+    label = "Strong zone" if n >= 3 else "Tested zone" if n >= 2 else "First test"
+    return f"""
+      <tr>
+        <td style="padding:3px 16px;font-size:12px;color:{_MUTED};">Support zone tests</td>
+        <td style="padding:3px 16px;text-align:right;font-size:12px;">
+          <span style="color:{color};font-weight:600;">{n}×</span>
+          <span style="color:{_MUTED};font-size:11px;"> — {label}</span>
+        </td>
+      </tr>"""
+
+
+def _scorecard_row(sig: dict) -> str:
+    """Historical win rate and avg return for this ticker + signal type."""
+    h = sig.get("hist")
+    if not h:
+        return f"""
+      <tr>
+        <td style="padding:3px 16px;font-size:12px;color:{_MUTED};">Historical edge</td>
+        <td style="padding:3px 16px;text-align:right;font-size:11px;color:{_MUTED};">
+          No history yet
+        </td>
+      </tr>"""
+    wr_color = _GREEN if h["wr"] >= 55 else _ORANGE if h["wr"] >= 45 else _RED
+    pnl_color = _GREEN if h["avg_pnl"] > 0 else _RED
+    return f"""
+      <tr>
+        <td style="padding:3px 16px;font-size:12px;color:{_MUTED};">
+          Historical ({sig['signal_type']} on {sig['ticker'].replace('.NS','')})
+        </td>
+        <td style="padding:3px 16px;text-align:right;font-size:12px;">
+          <span style="color:{wr_color};font-weight:600;">{h['wr']:.0f}% WR</span>
+          <span style="color:{_MUTED};">  ·  </span>
+          <span style="color:{pnl_color};">avg {h['avg_pnl']:+.1f}%</span>
+          <span style="color:{_MUTED};font-size:11px;"> ({h['n']} trades · {h['confidence_label']})</span>
+        </td>
+      </tr>"""
+
+
+def _regime_warning_row(sig: dict) -> str:
+    """Warning row when signal fires in a bear market regime."""
+    if not sig.get("bear_regime_warning"):
+        return ""
+    return f"""
+      <tr>
+        <td colspan="2" style="padding:6px 12px;background:#744210;border-radius:4px;
+            color:#fbd38d;font-size:12px;text-align:center;margin:4px 16px;">
+          ⚠️  Nifty is below EMA200 — broader market in bear regime. Use tighter sizing.
+        </td>
+      </tr>"""
+
+
 # ── Per-signal HTML card ───────────────────────────────────────────────────────
 def _signal_card(sig: dict) -> str:
     is_long    = sig["direction"] == "LONG"
@@ -79,7 +181,7 @@ def _signal_card(sig: dict) -> str:
       <tr>
         <td style="padding:4px 16px;font-size:13px;color:{_MUTED};">Score</td>
         <td style="padding:4px 16px;text-align:right;font-size:13px;">
-          <span style="color:{score_color};font-weight:700;">{score} / 6</span>
+          <span style="color:{score_color};font-weight:700;">{score} / 7</span>
           <span style="color:{_MUTED};font-size:11px;"> — {score_label}</span>
         </td>
       </tr>
@@ -173,7 +275,7 @@ def _signal_card(sig: dict) -> str:
 
       <!-- EMA levels for chart reference -->
       <tr>
-        <td colspan="2" style="padding:6px 16px 12px;">
+        <td colspan="2" style="padding:6px 16px 4px;">
           <span style="font-size:11px;color:{_MUTED};">
             EMA21: ₹{sig['ema21']:,.2f} &nbsp;·&nbsp;
             EMA50: ₹{sig['ema50']:,.2f} &nbsp;·&nbsp;
@@ -181,6 +283,25 @@ def _signal_card(sig: dict) -> str:
           </span>
         </td>
       </tr>
+
+      <!-- ── INTELLIGENCE SECTION ───────────────────────────────────────── -->
+      <tr><td colspan="2" style="padding:0 16px;">
+        <hr style="border:none;border-top:1px solid #4a5568;margin:8px 0;">
+      </td></tr>
+      <tr>
+        <td colspan="2" style="padding:4px 16px 2px;">
+          <span style="font-size:10px;font-weight:700;color:{_BLUE};letter-spacing:1px;">
+            TRADE INTELLIGENCE
+          </span>
+        </td>
+      </tr>
+
+      {_timing_row(sig)}
+      {_pullback_row(sig)}
+      {_sr_row(sig)}
+      {_scorecard_row(sig)}
+      {_regime_warning_row(sig)}
+
     </table>"""
 
 

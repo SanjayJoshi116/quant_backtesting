@@ -24,7 +24,7 @@ from core.config import load_config
 warnings.filterwarnings("ignore")
 
 _BASE   = Path(__file__).parent.parent
-_RAW    = _BASE / "data" / "raw"
+_RAW    = _BASE / "data" / "screener"   # screener-only cache — never overwrites backtest data
 _LOGS   = _BASE / "logs"
 _FLOG   = _LOGS / "fetch_log.csv"
 

@@ -86,7 +86,7 @@ def test_detect_params_override(cached_ticker_df):
 # ── SIGNAL_META completeness ──────────────────────────────────────────────────
 
 def test_signal_meta_has_all_types():
-    expected = {"PB-L", "PB50-L", "BO-L", "PB-S", "BO-S"}
+    expected = {"PB-L", "BASE-BO", "BO-L", "PB-S", "BO-S"}
     assert set(SIGNAL_META.keys()) == expected
 
 

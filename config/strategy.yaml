@@ -5,7 +5,7 @@
 # Active values = WFO-optimised (walk-forward 2016-2020 IS, 2021-2026 OOS).
 # Default/baseline values shown in comments for reference.
 
-config_version: "1.1"
+config_version: "1.3"
 
 # ── Exit / Risk management ────────────────────────────────────────────────────
 exit:
@@ -27,11 +27,6 @@ entry:
   rsi_pb_hi:    58       # RSI must be below this              (default 62)
   pb_tol:       1.008    # low ≤ EMA21 × pb_tol
 
-  # Pullback to EMA50 (PB50-L)
-  rsi_pb50_lo:  38
-  rsi_pb50_hi:  55
-  pb50_tol:     1.005    # low ≤ EMA50 × pb50_tol
-
   # Breakout (BO-L)
   rsi_bo_lo:    48
   rsi_bo_hi:    75
@@ -48,6 +43,16 @@ entry:
   # Volume confirmation
   vol_mult_long:  1.1    # volume ≥ vol_ma × vol_mult_long     (default 1.05)
   vol_mult_short: 1.3
+
+# ── Market regime filter ──────────────────────────────────────────────────────
+# Block new long entries when Nifty50 is below its nifty_ema_period-day EMA.
+# Screener flags (but still sends) signals in a bear regime so you decide.
+regime:
+  regime_enabled:    false  # TESTED: EMA200 regime filter hurt Sharpe (3.47→3.24).
+  #                           Individual stock bull_trend already acts as regime filter.
+  #                           Kept as infrastructure; screener still shows Nifty regime
+  #                           as an informational warning, not a hard block.
+  nifty_ema_period:  200
 
 # ── Data / caching ────────────────────────────────────────────────────────────
 data:
