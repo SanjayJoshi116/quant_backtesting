@@ -66,7 +66,7 @@ def screen(
         help="Override watchlist (e.g. --tickers WIPRO.NS TCS.NS).",
     ),
 ) -> None:
-    """Run the daily screener and send email alerts."""
+    """Run the daily screener — sends one email with technical signals + chart patterns."""
     from bot.main import run as _screen
     _screen(watchlist=tickers or None, dry_run=dry_run)
 
@@ -103,6 +103,101 @@ def both(
 
 
 # ── config ────────────────────────────────────────────────────────────────────
+
+@app.command()
+def patterns(
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print results to terminal, do NOT send email.",
+    ),
+    min_confidence: str = typer.Option(
+        "MODERATE", "--confidence",
+        help="Minimum confidence to show: HIGH or MODERATE.",
+    ),
+    universe: str = typer.Option(
+        "backtest", "--universe",
+        help="Which stock list to scan: 'backtest' (default ~86), 'bot', or 'all'.",
+    ),
+) -> None:
+    """Scan stocks for chart patterns forming — double bottom, bull flag, wedge, H&S, cup & handle."""
+    import sys, os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    from data import TICKERS, RAW_DIR, _safe_name
+    from bot.universe import WATCHLIST
+    from indicators import prepare_indicators
+    from core.pattern_scanner import scan_patterns
+    from core.data import fetch_or_load
+    import pandas as pd
+    from tqdm import tqdm
+    from datetime import datetime
+
+    # Build combined unique ticker list
+    if universe == "backtest":
+        scan_list = list(dict.fromkeys(TICKERS))
+    elif universe == "bot":
+        scan_list = list(dict.fromkeys(WATCHLIST))
+    else:  # all
+        scan_list = list(dict.fromkeys(TICKERS + WATCHLIST))
+
+    typer.echo(f"\n{'='*65}")
+    typer.echo(f"  Pattern Scanner  ·  {datetime.now().strftime('%d %b %Y  %H:%M')}")
+    typer.echo(f"  Universe: {universe} ({len(scan_list)} stocks)  |  Min confidence: {min_confidence}")
+    typer.echo(f"{'='*65}\n")
+
+    # Only scan tickers that have cached CSV data
+    scan_list = [t for t in scan_list
+                 if os.path.exists(os.path.join(RAW_DIR, f"{_safe_name(t)}.csv"))]
+
+    typer.echo(f"  Stocks with cached data: {len(scan_list)}\n")
+
+    results: list[dict] = []
+    failed:  list[str]  = []
+
+    for ticker in tqdm(scan_list, desc="Scanning patterns", ncols=70):
+        try:
+            csv = os.path.join(RAW_DIR, f"{_safe_name(ticker)}.csv")
+            if not os.path.exists(csv):
+                continue
+            raw = pd.read_csv(csv, index_col=0, parse_dates=True)
+            raw.index = pd.to_datetime(raw.index).tz_localize(None)
+            if len(raw) < 100:
+                continue
+            ind = prepare_indicators(raw)
+            pats = scan_patterns(ind)
+            for p in pats:
+                if min_confidence == "HIGH" and p["confidence"] != "HIGH":
+                    continue
+                results.append({"ticker": ticker, **p})
+        except Exception as e:
+            failed.append(ticker)
+
+    # Sort: HIGH first, then by pattern type
+    results.sort(key=lambda x: (0 if x["confidence"] == "HIGH" else 1, x["pattern"]))
+
+    if not results:
+        typer.echo("  No patterns found at the selected confidence level.")
+    else:
+        typer.echo(f"  Found {len(results)} pattern(s):\n")
+        _CONF_COLOR = {"HIGH": "🟢", "MODERATE": "🟡"}
+        for r in results:
+            icon = _CONF_COLOR.get(r["confidence"], "⚪")
+            typer.echo(f"  {icon} {r['ticker']:<20} [{r['pattern']}]  {r['confidence']}")
+            typer.echo(f"     {r['description']}")
+            typer.echo()
+
+    if failed:
+        typer.echo(f"  Errors on: {', '.join(failed[:5])}{'...' if len(failed) > 5 else ''}")
+
+    if not dry_run and results:
+        from bot.notifier import send_pattern_alert
+        send_pattern_alert(results)
+        typer.echo(f"  Pattern alert email sent ({len(results)} patterns).")
+    elif not results:
+        pass
+    else:
+        typer.echo("  [DRY RUN] Email not sent.")
+
 
 @app.command()
 def config() -> None:

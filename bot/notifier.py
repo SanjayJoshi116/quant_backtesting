@@ -397,7 +397,8 @@ def _sector_chart(signals: list[dict]) -> str:
 
 
 # ── Full email HTML ────────────────────────────────────────────────────────────
-def _build_html(signals: list[dict], scan_date: str) -> str:
+def _build_html(signals: list[dict], scan_date: str,
+                patterns: list[dict] | None = None) -> str:
     n = len(signals)
     headline = (
         f"{n} Signal{'s' if n != 1 else ''} Found — {scan_date}"
@@ -412,6 +413,7 @@ def _build_html(signals: list[dict], scan_date: str) -> str:
     )
 
     sector_chart_html = _sector_chart(signals)
+    patterns_html     = _patterns_section(patterns or [])
     cards_html = "".join(_signal_card(s) for s in signals) if n > 0 else f"""
     <p style="color:{_MUTED};text-align:center;padding:32px 0;font-size:15px;">
       📭 &nbsp; No trade setups today. The market is either choppy or no stocks
@@ -449,11 +451,12 @@ def _build_html(signals: list[dict], scan_date: str) -> str:
           </td>
         </tr>
 
-        <!-- Sector chart + Cards -->
+        <!-- Sector chart + Signal cards + Pattern watch -->
         <tr>
           <td style="padding:20px 8px;">
             {sector_chart_html}
             {cards_html}
+            {patterns_html}
           </td>
         </tr>
 
@@ -481,7 +484,74 @@ def _build_html(signals: list[dict], scan_date: str) -> str:
 
 
 # ── Send function ──────────────────────────────────────────────────────────────
-def send_alert(signals: list[dict]) -> bool:
+def _patterns_section(patterns: list[dict]) -> str:
+    """HTML section showing chart patterns forming — inserted after signal cards."""
+    if not patterns:
+        return ""
+
+    _PICONS = {
+        "DOUBLE_BOTTOM":      "📉→📈",  "BULL_FLAG":          "🚩",
+        "BULL_PENNANT":       "📐",      "FALLING_WEDGE":      "↘↗",
+        "DESCENDING_CHANNEL": "📉",      "ASCENDING_TRIANGLE": "△",
+        "CUP_AND_HANDLE":     "🥤",      "INV_HEAD_SHOULDERS": "∪",
+        "HEAD_SHOULDERS":     "∩",        "SYMM_TRIANGLE":      "◇",
+    }
+
+    cards = ""
+    for p in patterns:
+        icon       = _PICONS.get(p["pattern"], "📊")
+        conf_color = _GREEN if p["confidence"] == "HIGH" else _ORANGE
+        name       = p["pattern"].replace("_", " ").title()
+        sector_badge = (f'<span style="background:#2c5282;color:#bee3f8;padding:2px 8px;'
+                        f'border-radius:10px;font-size:10px;">{p.get("sector","")}</span>'
+                        if p.get("sector") else "")
+        cards += f"""
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="background:{_CARD};border-radius:8px;margin-bottom:10px;
+                  border-left:4px solid {conf_color};overflow:hidden;">
+      <tr>
+        <td style="padding:10px 14px 4px;">
+          <span style="font-size:15px;font-weight:700;color:{conf_color};">
+            {icon} {p['ticker'].replace('.NS','')}
+          </span>
+          &nbsp;{sector_badge}&nbsp;
+          <span style="float:right;background:{conf_color};color:#fff;
+                       padding:1px 8px;border-radius:8px;font-size:10px;
+                       font-weight:700;">{p['confidence']}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:2px 14px 4px;">
+          <span style="font-size:11px;font-weight:600;color:{_WHITE};">{name}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:2px 14px 10px;font-size:11px;color:{_MUTED};line-height:1.5;">
+          {p['description']}
+        </td>
+      </tr>
+    </table>"""
+
+    return f"""
+    <!-- ── PATTERNS SECTION ───────────────────────────────── -->
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="background:{_CARD};border-radius:10px;margin-bottom:24px;
+                  border-left:5px solid {_ORANGE};overflow:hidden;">
+      <tr>
+        <td style="padding:14px 16px 8px;background:{_DARK};">
+          <span style="font-size:16px;font-weight:700;color:{_WHITE};">
+            📐  Chart Patterns Watch &nbsp;
+            <span style="font-size:12px;color:{_MUTED};font-weight:400;">
+              ({len(patterns)} patterns forming — verify on chart before trading)
+            </span>
+          </span>
+        </td>
+      </tr>
+      <tr><td style="padding:10px 16px;">{cards}</td></tr>
+    </table>"""
+
+
+def send_alert(signals: list[dict], patterns: list[dict] | None = None) -> bool:
     """
     Send the daily alert email.
 
@@ -494,11 +564,15 @@ def send_alert(signals: list[dict]) -> bool:
         )
         return False
 
+    patterns = patterns or []
     scan_date = datetime.now().strftime("%d %b %Y")
     n         = len(signals)
+    np_       = len(patterns)
     subject   = (
-        f"[NSE Screener] {n} Signal{'s' if n != 1 else ''} — {scan_date}"
-        if n > 0 else
+        f"[NSE Screener] {n} Signal{'s' if n!=1 else ''}"
+        + (f" · {np_} Pattern{'s' if np_!=1 else ''}" if np_ > 0 else "")
+        + f" — {scan_date}"
+        if n > 0 or np_ > 0 else
         f"[NSE Screener] No signals — {scan_date}"
     )
 
@@ -521,7 +595,7 @@ def send_alert(signals: list[dict]) -> bool:
         plain_lines.append("No trade setups today.")
 
     msg.attach(MIMEText("\n".join(plain_lines), "plain"))
-    msg.attach(MIMEText(_build_html(signals, scan_date), "html"))
+    msg.attach(MIMEText(_build_html(signals, scan_date, patterns=patterns), "html"))
 
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
@@ -538,4 +612,103 @@ def send_alert(signals: list[dict]) -> bool:
         return False
     except Exception as e:
         print(f"[NOTIFIER] Failed to send email: {e}")
+        return False
+
+
+# ── Pattern alert email ────────────────────────────────────────────────────────
+_PATTERN_ICONS = {
+    "DOUBLE_BOTTOM":      "📉→📈",
+    "BULL_FLAG":          "🚩",
+    "FALLING_WEDGE":      "📐",
+    "ASCENDING_TRIANGLE": "△",
+}
+
+def send_pattern_alert(patterns: list[dict]) -> bool:
+    """Send a separate pattern watch email."""
+    if not GMAIL_SENDER or not GMAIL_APP_PASS or not ALERT_RECIPIENTS:
+        print("[NOTIFIER] Gmail credentials not configured.")
+        return False
+
+    scan_date = datetime.now().strftime("%d %b %Y")
+    subject   = f"[NSE Patterns] {len(patterns)} setup(s) forming — {scan_date}"
+
+    cards = ""
+    for p in patterns:
+        icon  = _PATTERN_ICONS.get(p["pattern"], "📊")
+        conf_color = _GREEN if p["confidence"] == "HIGH" else _ORANGE
+        cards += f"""
+    <table width="100%" cellpadding="0" cellspacing="0"
+           style="background:{_CARD};border-radius:10px;margin-bottom:16px;
+                  border-left:5px solid {conf_color};overflow:hidden;">
+      <tr>
+        <td colspan="2" style="padding:12px 16px 6px;background:{_DARK};">
+          <span style="font-size:18px;font-weight:700;color:{conf_color};">
+            {icon}  {p['ticker']}
+          </span>
+          <span style="float:right;background:{conf_color};color:#fff;
+                       padding:2px 10px;border-radius:10px;font-size:11px;
+                       font-weight:700;">{p['confidence']}</span>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:8px 16px;font-size:13px;color:{_MUTED};">Pattern</td>
+        <td style="padding:8px 16px;text-align:right;font-size:13px;
+                   color:{_WHITE};font-weight:600;">
+          {p['pattern'].replace('_',' ').title()}
+        </td>
+      </tr>
+      <tr>
+        <td colspan="2" style="padding:6px 16px 14px;font-size:12px;
+                                color:{_MUTED};line-height:1.5;">
+          {p['description']}
+        </td>
+      </tr>
+    </table>"""
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#0f1117;
+             font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center" style="padding:24px 12px;">
+      <table width="620" cellpadding="0" cellspacing="0">
+        <tr>
+          <td style="background:#1a202c;border-radius:12px 12px 0 0;
+                     padding:24px 28px;border-bottom:2px solid {_ORANGE};">
+            <div style="font-size:22px;font-weight:700;color:{_WHITE};">
+              📐 &nbsp; NSE Pattern Watch
+            </div>
+            <div style="font-size:13px;color:{_MUTED};margin-top:4px;">
+              {len(patterns)} chart pattern(s) forming — {scan_date}
+            </div>
+          </td>
+        </tr>
+        <tr><td style="padding:20px 8px;">{cards}</td></tr>
+        <tr>
+          <td style="background:#1a202c;border-radius:0 0 12px 12px;padding:16px 28px;">
+            <p style="font-size:11px;color:#718096;margin:0;">
+              These are algorithmically detected chart patterns.
+              <strong style="color:{_MUTED};">Verify on TradingView before trading.</strong>
+              Pattern detection is probabilistic — not all setups follow through.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body></html>"""
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = GMAIL_SENDER
+        msg["To"]      = ", ".join(ALERT_RECIPIENTS)
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+            s.login(GMAIL_SENDER, GMAIL_APP_PASS)
+            s.sendmail(GMAIL_SENDER, ALERT_RECIPIENTS, msg.as_string())
+        print(f"[NOTIFIER] Pattern alert sent → {len(patterns)} pattern(s)")
+        return True
+    except Exception as e:
+        print(f"[NOTIFIER] Pattern alert failed: {e}")
         return False

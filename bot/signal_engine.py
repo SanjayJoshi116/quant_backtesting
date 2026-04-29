@@ -63,7 +63,8 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
     if len(df_raw) < 260:
         return []
 
-    df = prepare_indicators(df_raw)
+    # Accept pre-computed indicator df (has EMA21 col) to avoid double computation
+    df = df_raw if "EMA21" in df_raw.columns else prepare_indicators(df_raw)
 
     # ── Pull last-bar values ───────────────────────────────────────────────────
     last = df.iloc[-1]

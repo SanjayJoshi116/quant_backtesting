@@ -16,6 +16,7 @@ from core.data import fetch_or_load
 from core.logging import log_signal
 from core.config import load_config
 from core.scorecard import get_signal_stats
+from core.pattern_scanner import scan_patterns
 
 _NIFTY = "^NSEI"
 
@@ -39,31 +40,31 @@ def _market_regime() -> bool:
         return True
 
 
-def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
+def run_scan(watchlist: list[str] = None,
+             verbose:   bool       = True,
+             min_pattern_confidence: str  = "HIGH",
+             max_patterns:           int  = 30) -> dict:
     """
-    Scan every ticker in watchlist.
-
-    Parameters
-    ----------
-    watchlist : list of tickers (defaults to universe.WATCHLIST)
-    verbose   : print progress bar
+    Scan every ticker in watchlist for both technical signals and chart patterns.
 
     Returns
     -------
-    List of signal dicts sorted by signal score descending.
-    Each dict also carries a 'negative_edge' bool flag.
+    dict with keys:
+      'signals'  : list of signal dicts (EMA/RSI/ADX triggered)
+      'patterns' : list of pattern dicts (chart patterns forming)
     """
     if watchlist is None:
         watchlist = WATCHLIST
 
-    # Check market regime once before scanning the entire universe
+    # Market regime check
     bull_regime = _market_regime()
     if verbose:
         status = "BULL ✓" if bull_regime else "BEAR ⚠ — long signals flagged"
         print(f"  Market regime (Nifty vs EMA200): {status}")
 
-    alerts: list[dict] = []
-    failed: list[str]  = []
+    alerts:   list[dict] = []
+    patterns: list[dict] = []
+    failed:   list[str]  = []
 
     iterator = tqdm(watchlist, desc="Scanning", ncols=72) if verbose else watchlist
 
@@ -73,8 +74,18 @@ def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
             failed.append(ticker)
             continue
 
+        # ── Compute indicators once, reuse for both signals and patterns ─────
         try:
-            signals = detect(df, ticker)
+            from indicators import prepare_indicators
+            ind = prepare_indicators(df)
+        except Exception as e:
+            print(f"  [ERR]   {ticker}: indicator error — {e}")
+            failed.append(ticker)
+            continue
+
+        # ── Technical signals ─────────────────────────────────────────────────
+        try:
+            signals = detect(ind, ticker)   # detect() accepts pre-computed df
         except Exception as e:
             print(f"  [ERR]   {ticker}: signal engine failed — {e}")
             failed.append(ticker)
@@ -86,15 +97,32 @@ def run_scan(watchlist: list[str] = None, verbose: bool = True) -> list[dict]:
             sig["bear_regime_warning"] = (
                 not bull_regime and sig["direction"] == "LONG"
             )
-            # Historical scorecard for this ticker + signal type
             hist = get_signal_stats(ticker, sig["signal_type"])
-            sig["hist"] = hist   # None if no history yet
+            sig["hist"]      = hist
             sig["signal_id"] = log_signal(sig)
             alerts.append(sig)
 
+        # ── Chart patterns (same indicators, no extra fetch) ──────────────────
+        # Only collect if we haven't hit the email cap yet
+        if len(patterns) < max_patterns:
+            try:
+                found = scan_patterns(ind)
+                for pat in found:
+                    if min_pattern_confidence == "HIGH" and pat["confidence"] != "HIGH":
+                        continue
+                    pat["ticker"] = ticker
+                    pat["sector"] = get_sector(ticker)
+                    patterns.append(pat)
+                    if len(patterns) >= max_patterns:
+                        break
+            except Exception:
+                pass
+
     if failed and verbose:
         print(f"\n  Could not process: {', '.join(failed)}")
+        print(f"  Signals found: {len(alerts)}  |  Patterns found: {len(patterns)}")
 
-    # Sort: high score first; within same score, longs before shorts
     alerts.sort(key=lambda s: (-s["score"], s["direction"]))
-    return alerts
+    patterns.sort(key=lambda p: (0 if p["confidence"] == "HIGH" else 1, p["pattern"]))
+
+    return {"signals": alerts, "patterns": patterns}

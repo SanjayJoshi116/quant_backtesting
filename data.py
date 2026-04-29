@@ -81,6 +81,9 @@ TICKERS = [
     # ── MEDIA & TELECOM ──────────────────────────────────────────────────────
     "INDUSTOWER.NS", "IDEA.NS",
     # ZEEL removed: Sharpe -0.86, WR 13.3%, statistically significant negative edge (p=0.0125)
+
+    # ── NEW-AGE ENERGY ────────────────────────────────────────────────────────
+    "NTPCGREEN.NS",
 ]
 
 NIFTY_TICKER   = "^NSEI"

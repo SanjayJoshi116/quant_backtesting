@@ -27,47 +27,55 @@ from bot.screener import run_scan
 from bot.notifier import send_alert
 
 
-def _print_summary(signals: list[dict]) -> None:
+def _print_summary(signals: list[dict], patterns: list[dict]) -> None:
     """Pretty-print scan results to the terminal."""
     print()
     if not signals:
         print("  ── No signals today ─────────────────────────────────────────")
-        return
+    else:
+        sep = "─" * 70
+        print(f"  {sep}")
+        print(f"  {'TICKER':<14} {'TYPE':<8} {'DIR':<6} {'SCORE':<7} "
+              f"{'ENTRY':>9} {'SL':>9} {'TP':>9}  {'R/R'}")
+        print(f"  {sep}")
+        for s in signals:
+            warn = " ⚠" if s.get("negative_edge") else ""
+            print(
+                f"  {s['ticker']:<14} {s['signal_type']:<8} {s['direction']:<6} "
+                f"{s['score']}/7    "
+                f"₹{s['entry']:>8,.0f}  ₹{s['sl']:>8,.0f}  ₹{s['tp']:>8,.0f}  "
+                f"1:{s['rr']}{warn}"
+            )
+        print(f"  {sep}")
+        print(f"  Total signals: {len(signals)}")
 
-    sep = "─" * 70
-    print(f"  {sep}")
-    print(f"  {'TICKER':<14} {'TYPE':<8} {'DIR':<6} {'SCORE':<7} "
-          f"{'ENTRY':>9} {'SL':>9} {'TP':>9}  {'R/R'}")
-    print(f"  {sep}")
-    for s in signals:
-        warn = " ⚠" if s.get("negative_edge") else ""
-        print(
-            f"  {s['ticker']:<14} {s['signal_type']:<8} {s['direction']:<6} "
-            f"{s['score']}/6    "
-            f"₹{s['entry']:>8,.0f}  ₹{s['sl']:>8,.0f}  ₹{s['tp']:>8,.0f}  "
-            f"1:{s['rr']}{warn}"
-        )
-    print(f"  {sep}")
-    print(f"  Total signals: {len(signals)}")
+    if patterns:
+        print(f"\n  ── Chart Patterns ({len(patterns)}) ──────────────────────────────")
+        for p in patterns[:10]:   # show top 10 in terminal
+            conf = "🟢" if p["confidence"] == "HIGH" else "🟡"
+            print(f"  {conf} {p['ticker']:<18} [{p['pattern']}]")
 
 
 def run(watchlist: list[str] | None = None,
-        dry_run:   bool            = False) -> list[dict]:
+        dry_run:   bool            = False) -> dict:
     """Callable entry-point used by pipeline.py and tests."""
     print("=" * 70)
     print(f"  NSE Swing Screener  ·  {datetime.now().strftime('%d %b %Y  %H:%M IST')}")
     print("=" * 70)
 
-    signals = run_scan(watchlist=watchlist, verbose=True)
-    _print_summary(signals)
+    result   = run_scan(watchlist=watchlist, verbose=True)
+    signals  = result["signals"]
+    patterns = result["patterns"]
+
+    _print_summary(signals, patterns)
 
     if dry_run:
         print("\n  [DRY RUN] Email not sent.")
     else:
         print()
-        send_alert(signals)
+        send_alert(signals, patterns=patterns)
 
-    return signals
+    return result
 
 
 def main():
