@@ -303,75 +303,110 @@ def detect_bull_flag(df: pd.DataFrame,
 # ── Pattern 3: Falling Wedge ──────────────────────────────────────────────────
 
 def detect_falling_wedge(df: pd.DataFrame,
-                         lookback: int   = 40,
-                         min_bars: int   = 10,
-                         max_slope_diff: float = -0.001) -> Optional[dict]:
+                         lookback:           int   = 60,
+                         min_bars:           int   = 10,
+                         min_slope_pct:      float = 0.001,  # lines must clearly decline (lowered)
+                         max_violation_frac: float = 0.25,   # max 25% bars above upper line
+                         pivot_n:            int   = 2) -> Optional[dict]:
     """
-    Declining highs AND declining lows, but highs falling faster — lines converge.
-    Both trendlines have negative slope; upper slope < lower slope (steeper fall).
+    Rules confirmed by user:
+    - No prior downtrend required
+    - Both lines declining (minimum slope — rejects channels like SUNPHARMA)
+    - Upper line falls FASTER than lower (converging to a point)
+    - Upper trendline must be CLEAN — not too many bars spiking above it
+    - Bullish reversal: breakout is upward above the upper declining line
     """
     n = len(df)
     if n < lookback + 10:
         return None
 
     sub      = df.iloc[-lookback:]
-    highs_ph = _swing_highs(sub["High"], n=2)
-    lows_pl  = _swing_lows(sub["Low"], sub["High"], n=2)
+    highs_ph = _swing_highs(sub["High"], n=pivot_n)
+    lows_pl  = _swing_lows(sub["Low"], sub["High"], n=pivot_n)
 
-    if len(highs_ph) < 3 or len(lows_pl) < 3:
+    # Need at least 2 pivot highs and 2 pivot lows for trendlines
+    if len(highs_ph) < 2 or len(lows_pl) < 2:
         return None
 
-    # Use last 3 pivot highs and lows to fit trendlines
-    h_idx  = np.array([x[0] for x in highs_ph[-3:]], dtype=float)
-    h_vals = np.array([x[1] for x in highs_ph[-3:]], dtype=float)
-    l_idx  = np.array([x[0] for x in lows_pl[-3:]], dtype=float)
-    l_vals = np.array([x[1] for x in lows_pl[-3:]], dtype=float)
+    # Use last 3 pivots (or all available if fewer)
+    h_pts = highs_ph[-3:] if len(highs_ph) >= 3 else highs_ph[-2:]
+    l_pts = lows_pl[-3:]  if len(lows_pl)  >= 3 else lows_pl[-2:]
 
-    if len(h_idx) < 2 or len(l_idx) < 2:
-        return None
+    h_idx  = np.array([x[0] for x in h_pts], dtype=float)
+    h_vals = np.array([x[1] for x in h_pts], dtype=float)
+    l_idx  = np.array([x[0] for x in l_pts], dtype=float)
+    l_vals = np.array([x[1] for x in l_pts], dtype=float)
 
-    h_slope = float(np.polyfit(h_idx, h_vals, 1)[0])
-    l_slope = float(np.polyfit(l_idx, l_vals, 1)[0])
+    h_slope, h_inter = np.polyfit(h_idx, h_vals, 1)
+    l_slope, l_inter = np.polyfit(l_idx, l_vals, 1)
+    h_slope = float(h_slope); h_inter = float(h_inter)
+    l_slope = float(l_slope); l_inter = float(l_inter)
 
-    # Both lines declining AND upper falling faster than lower (converging)
+    # ── Rule 1: Both lines must be clearly declining ──────────────────────────
+    # Normalise by price to get % slope per bar
+    price_ref = float(sub["Close"].mean())
+    h_slope_pct = abs(h_slope) / price_ref
+    l_slope_pct = abs(l_slope) / price_ref
+
     if h_slope >= 0 or l_slope >= 0:
-        return None
-    if h_slope >= l_slope + max_slope_diff:
-        return None  # Not converging enough
+        return None   # lines not declining
+    if h_slope_pct < min_slope_pct or l_slope_pct < min_slope_pct:
+        return None   # too flat — this is a channel, not a wedge (rejects SUNPHARMA)
 
-    # Pattern duration
+    # ── Rule 2: Upper line must fall faster than lower (converging) ───────────
+    if abs(h_slope) <= abs(l_slope):
+        return None   # not converging
+
+    # ── Rule 3: Upper trendline must be clean ─────────────────────────────────
+    # Count bars where price HIGH is significantly above the projected upper line
     pattern_start = int(min(h_idx[0], l_idx[0]))
-    pattern_bars  = lookback - pattern_start
-    if pattern_bars < min_bars:
+    pattern_slice = sub.iloc[pattern_start:]
+    bar_count = len(pattern_slice)
+
+    if bar_count < min_bars:
         return None
 
-    current      = float(df["Close"].iloc[-1])
-    wedge_top    = float(h_vals[-1])
-    wedge_bottom = float(l_vals[-1])
+    x_full     = np.arange(pattern_start, pattern_start + bar_count, dtype=float)
+    upper_proj = h_inter + h_slope * x_full
+    high_vals  = pattern_slice["High"].values
 
-    # Breakout: price above the falling upper trendline
+    # Violations: bar high exceeds the upper trendline by more than 1%
+    violations = int(np.sum(high_vals > upper_proj * 1.01))
+    if violations / bar_count > max_violation_frac:
+        return None   # upper trendline is not clean (like INDUSTOWER's noisy line)
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+    current    = float(df["Close"].iloc[-1])
+    wedge_top  = float(h_inter + h_slope * (pattern_start + bar_count - 1))
+    wedge_bot  = float(l_inter + l_slope * (pattern_start + bar_count - 1))
     breaking_out = current > wedge_top * 1.005
 
-    if abs(h_slope) > abs(l_slope) * 1.5:
+    converge_ratio = abs(h_slope) / max(abs(l_slope), 1e-6)
+    violation_pct  = violations / bar_count
+
+    if converge_ratio > 1.5 and violation_pct < 0.15:
         confidence = "HIGH"
-    elif abs(h_slope) > abs(l_slope) * 1.2:
+    elif converge_ratio > 1.2:
         confidence = "MODERATE"
     else:
-        confidence = "LOW"
+        confidence = "MODERATE"
 
     return {
         "pattern":       "FALLING_WEDGE",
         "confidence":    confidence,
         "wedge_top":     round(wedge_top, 2),
-        "wedge_bottom":  round(wedge_bottom, 2),
+        "wedge_bottom":  round(wedge_bot, 2),
         "upper_slope":   round(h_slope, 4),
         "lower_slope":   round(l_slope, 4),
-        "bars_forming":  pattern_bars,
+        "bars_forming":  bar_count,
+        "violation_pct": round(violation_pct * 100, 1),
         "breaking_out":  breaking_out,
         "description": (
-            f"Falling wedge over {pattern_bars} bars. "
-            f"Upper line slope {h_slope:.3f}, lower {l_slope:.3f} (converging). "
-            f"{'Breaking above wedge top ₹' + str(round(wedge_top, 0)) + ' ↑' if breaking_out else 'Watch for break above ₹' + str(round(wedge_top, 0))}."
+            f"Falling wedge over {bar_count} bars. "
+            f"Upper line slope {h_slope:.3f}, lower {l_slope:.3f} "
+            f"(converge ratio {converge_ratio:.1f}×, "
+            f"{violation_pct*100:.0f}% line violations). "
+            f"{'Breaking above ₹' + str(round(wedge_top, 0)) + ' ↑' if breaking_out else 'Watch for break above ₹' + str(round(wedge_top, 0))}."
         ),
     }
 
@@ -379,65 +414,99 @@ def detect_falling_wedge(df: pd.DataFrame,
 # ── Pattern 4: Ascending Triangle ────────────────────────────────────────────
 
 def detect_ascending_triangle(df: pd.DataFrame,
-                               lookback:      int   = 50,
-                               min_bars:      int   = 10,
-                               flat_tol_pct:  float = 0.012) -> Optional[dict]:  # tightened from 2%
+                               lookback:           int   = 60,
+                               min_bars:           int   = 8,
+                               flat_tol_pct:       float = 0.015,
+                               min_resist_touches: int   = 2,
+                               max_dist_from_res:  float = 0.03) -> Optional[dict]:
     """
-    Flat resistance (recent highs within flat_tol_pct of each other) +
-    rising support (higher lows — positive slope).
-    Energy builds for an upside breakout.
+    Rules confirmed by user:
+    1. Reject if stock is in clear bear trend (not valid in strong downtrend — TCS)
+    2. Flat resistance must be tested at least 2 times by pivot highs
+    3. Current price must be within 3% below resistance — pattern not actionable if far below
+    4. Rising support (higher lows, positive slope)
     """
     n = len(df)
     if n < lookback + 10:
         return None
 
+    # ── Rule 1: Reject clear bear trend (TCS fix) ─────────────────────────────
+    if "bear_trend" in df.columns and bool(df["bear_trend"].iloc[-1]):
+        return None   # EMA stack bearish — ascending triangle not valid
+
     sub      = df.iloc[-lookback:]
     highs_ph = _swing_highs(sub["High"], n=2)
     lows_pl  = _swing_lows(sub["Low"], sub["High"], n=2)
 
-    if len(highs_ph) < 3 or len(lows_pl) < 3:
+    if len(highs_ph) < 2 or len(lows_pl) < 2:
         return None
 
-    # Check flat resistance: last 3 pivot highs within flat_tol_pct of each other
-    recent_highs = [x[1] for x in highs_ph[-3:]]
-    max_h, min_h = max(recent_highs), min(recent_highs)
+    # ── Find resistance: cluster from most-recent pivot high outward ──────────
+    # Don't blindly take last 4 — old pivots at different levels break the calc.
+    # Start from the most recent pivot high and collect others within flat_tol_pct.
+    if not highs_ph:
+        return None
+
+    ref_high      = highs_ph[-1][1]   # most recent pivot high = anchor
+    resist_cluster = [(idx, ph) for idx, ph in highs_ph
+                      if abs(ph - ref_high) / ref_high < flat_tol_pct]
+
+    # ── Rule 2: At least 2 pivot touches on resistance ────────────────────────
+    resist_touches = len(resist_cluster)
+    if resist_touches < min_resist_touches:
+        return None   # resistance not tested enough times
+
+    resistance = float(np.mean([x[1] for x in resist_cluster]))
+    ph_vals    = [x[1] for x in resist_cluster]
+    max_h, min_h = max(ph_vals), min(ph_vals)
+
     if (max_h - min_h) / max_h > flat_tol_pct:
-        return None  # Highs not flat enough
+        return None   # cluster too wide — not a clean flat level
 
-    resistance = round(float(np.mean(recent_highs)), 2)
+    # ── Rule 3: Current price within 3% of resistance ─────────────────────────
+    current = float(df["Close"].iloc[-1])
+    dist_from_res = (resistance - current) / resistance
 
-    # Check rising support: positive slope on lows
-    l_idx  = np.array([x[0] for x in lows_pl[-3:]], dtype=float)
-    l_vals = np.array([x[1] for x in lows_pl[-3:]], dtype=float)
+    if dist_from_res > max_dist_from_res and current < resistance:
+        return None   # price too far below resistance — not actionable yet
+
+    # ── Rising support: positive slope on pivot lows ──────────────────────────
+    l_pts  = lows_pl[-3:] if len(lows_pl) >= 3 else lows_pl
+    l_idx  = np.array([x[0] for x in l_pts], dtype=float)
+    l_vals = np.array([x[1] for x in l_pts], dtype=float)
     l_slope = float(np.polyfit(l_idx, l_vals, 1)[0])
 
     if l_slope <= 0:
-        return None  # Support not rising
+        return None   # support not rising
 
-    current  = float(df["Close"].iloc[-1])
-    breaking = current > resistance * 1.005
+    # ── Confidence: tight resistance + multiple touches + near breakout ────────
+    spread_pct   = (max_h - min_h) / max_h * 100
+    breaking_out = current >= resistance * 1.002
 
-    # Triangle height = resistance - first support low
-    triangle_height = resistance - float(l_vals[0])
-    target = resistance + triangle_height
-
-    if (max_h - min_h) / max_h < 0.01 and l_slope > 0:
+    if spread_pct < 1.0 and resist_touches >= 3:
         confidence = "HIGH"
+    elif spread_pct < flat_tol_pct * 100:
+        confidence = "MODERATE"
     else:
         confidence = "MODERATE"
 
+    triangle_height = resistance - float(l_vals[0])
+    target = resistance + triangle_height
+
     return {
-        "pattern":      "ASCENDING_TRIANGLE",
-        "confidence":   confidence,
-        "resistance":   resistance,
-        "support_slope": round(l_slope, 4),
-        "target":       round(target, 2),
-        "breaking_out": breaking,
+        "pattern":         "ASCENDING_TRIANGLE",
+        "confidence":      confidence,
+        "resistance":      round(resistance, 2),
+        "resist_touches":  resist_touches,
+        "support_slope":   round(l_slope, 4),
+        "dist_from_res":   round(dist_from_res * 100, 1),
+        "target":          round(target, 2),
+        "breaking_out":    breaking_out,
         "description": (
-            f"Ascending triangle: resistance flat at ₹{resistance:,.0f} "
-            f"({(max_h - min_h) / max_h * 100:.1f}% spread). "
-            f"Support rising (slope {l_slope:.3f}). "
-            f"{'Breaking out ↑' if breaking else 'Watch ₹' + str(round(resistance, 0)) + ' for breakout'}. "
+            f"Ascending triangle: resistance ₹{resistance:,.0f} "
+            f"({resist_touches} tests, {spread_pct:.1f}% spread). "
+            f"Support rising. Price {dist_from_res*100:.1f}% from resistance. "
+            f"{'Breaking out ↑' if breaking_out else 'Watch ₹' + str(round(resistance, 0)) + ' for breakout'}. "
             f"Target ₹{target:,.0f}."
         ),
     }
@@ -663,85 +732,103 @@ def detect_descending_channel(df: pd.DataFrame,
 # ── Pattern 7: Cup & Handle ───────────────────────────────────────────────────
 
 def detect_cup_and_handle(df: pd.DataFrame,
-                           cup_min_bars:    int   = 20,
-                           cup_max_bars:    int   = 120,
-                           cup_depth_min:   float = 0.10,
-                           cup_depth_max:   float = 0.50,
-                           handle_max_bars: int   = 20,
-                           handle_retrace:  float = 0.50) -> Optional[dict]:
+                           lookback:        int   = 200,
+                           right_rim_tol:   float = 0.03,   # user: within 3% of left rim
+                           max_handle_depth: float = 0.05)  -> Optional[dict]:  # user: max 5%
     """
-    U-shaped recovery back to the prior high (the cup rim),
-    followed by a shallow pullback (the handle), then breakout.
-    High win rate pattern — represents gradual accumulation.
+    Rules confirmed by user:
+    - Right rim must recover to within 3% of left rim (BSE was at 50%+ below — correctly reject)
+    - No depth restriction — any drop is valid
+    - V-shape or U-shape both valid
+    - Handle: max 5% pullback from right rim, no minimum bar count
     """
     n = len(df)
-    if n < cup_min_bars + handle_max_bars + 5:
+    if n < 30:
         return None
 
     close = df["Close"].values
     high  = df["High"].values
+    low   = df["Low"].values
 
-    # Find left rim: recent swing high in the first half of lookback
-    search_start = max(0, n - cup_max_bars - handle_max_bars)
-    search_end   = n - cup_min_bars - handle_max_bars
+    # ── Find left rim: highest high in the lookback (not too recent) ──────────
+    search_start = max(0, n - lookback)
+    search_end   = n - 10   # leave room for right rim + handle
 
-    for left_rim_i in range(search_end, search_start, -1):
-        left_rim = float(high[left_rim_i])
+    left_rim_idx = int(search_start + np.argmax(high[search_start:search_end]))
+    left_rim     = float(high[left_rim_idx])
 
-        # Find cup bottom (lowest point after left rim)
-        bottom_i = int(np.argmin(close[left_rim_i: left_rim_i + cup_max_bars])) + left_rim_i
-        bottom   = float(close[bottom_i])
+    # Must have a meaningful decline after the left rim
+    after_left = close[left_rim_idx: search_end]
+    if len(after_left) < 5:
+        return None
 
-        cup_depth = (left_rim - bottom) / left_rim
-        if not (cup_depth_min < cup_depth < cup_depth_max):
-            continue
+    bottom_offset = int(np.argmin(after_left))
+    bottom_idx    = left_rim_idx + bottom_offset
+    bottom        = float(close[bottom_idx])
 
-        cup_bars  = bottom_i - left_rim_i
-        if cup_bars < cup_min_bars // 2:
-            continue
+    if bottom >= left_rim * 0.98:
+        return None   # no real cup — price barely moved down
 
-        # Find right rim: price recovers to within 5% of left rim
-        for right_rim_i in range(bottom_i + cup_min_bars // 2,
-                                  min(bottom_i + cup_max_bars, n - handle_max_bars)):
-            right_rim = float(high[right_rim_i])
-            if abs(right_rim - left_rim) / left_rim > 0.05:
-                continue  # right rim must be close to left rim
+    # ── Find right rim: price recovers to within 3% of left rim ──────────────
+    # Search from bottom onward for a bar whose high is within 3% of left_rim
+    found_rim = None
+    for i in range(bottom_idx + 2, n - 1):
+        rh = float(high[i])
+        if abs(rh - left_rim) / left_rim <= right_rim_tol:
+            found_rim = (i, rh)
+            break   # use first valid right rim (most recent complete cup)
 
-            # Handle: shallow pullback from right rim
-            handle_slice = close[right_rim_i: min(right_rim_i + handle_max_bars, n)]
-            if len(handle_slice) < 3:
-                continue
+    if found_rim is None:
+        return None   # right rim never recovered to left rim level — not a cup
 
-            handle_low  = float(np.min(handle_slice))
-            handle_retrace_pct = (right_rim - handle_low) / (right_rim - bottom)
-            if handle_retrace_pct > handle_retrace:
-                continue  # handle too deep
+    right_rim_i, right_rim = found_rim
 
-            current = float(close[-1])
-            breaking_out = current > right_rim * 1.002
-            target       = right_rim + (right_rim - bottom)
+    # ── Handle: price after right rim should not drop more than 5% ───────────
+    handle_slice = close[right_rim_i:]
+    if len(handle_slice) == 0:
+        return None
 
-            confidence = "HIGH" if cup_depth > 0.15 and cup_bars >= 30 else "MODERATE"
+    handle_low   = float(np.min(handle_slice))
+    handle_depth = (right_rim - handle_low) / right_rim
 
-            return {
-                "pattern":       "CUP_AND_HANDLE",
-                "confidence":    confidence,
-                "left_rim":      round(left_rim, 2),
-                "cup_bottom":    round(bottom, 2),
-                "right_rim":     round(right_rim, 2),
-                "cup_depth_pct": round(cup_depth * 100, 1),
-                "cup_bars":      cup_bars,
-                "target":        round(target, 2),
-                "breaking_out":  breaking_out,
-                "description": (
-                    f"Cup & Handle: {cup_bars}-bar cup, depth {cup_depth * 100:.0f}% "
-                    f"(₹{bottom:,.0f}→₹{right_rim:,.0f}). "
-                    f"Handle retrace {handle_retrace_pct * 100:.0f}%. "
-                    f"{'Breaking out above cup rim ↑' if breaking_out else 'Watch for break above ₹' + str(round(right_rim, 0))}. "
-                    f"Target ₹{target:,.0f}."
-                ),
-            }
-    return None
+    if handle_depth > max_handle_depth:
+        return None   # handle too deep — price fell more than 5% after right rim
+
+    # ── Output ─────────────────────────────────────────────────────────────────
+    current      = float(close[-1])
+    breaking_out = current >= right_rim * 1.002
+    cup_depth    = (left_rim - bottom) / left_rim
+    cup_bars     = right_rim_i - left_rim_idx
+    target       = right_rim + (right_rim - bottom)
+    rim_diff_pct = abs(right_rim - left_rim) / left_rim * 100
+
+    # Confidence: tighter rim match + shallower handle = higher conviction
+    if rim_diff_pct < 1.5 and handle_depth < 0.03:
+        confidence = "HIGH"
+    else:
+        confidence = "MODERATE"
+
+    return {
+        "pattern":          "CUP_AND_HANDLE",
+        "confidence":       confidence,
+        "left_rim":         round(left_rim, 2),
+        "cup_bottom":       round(bottom, 2),
+        "right_rim":        round(right_rim, 2),
+        "rim_diff_pct":     round(rim_diff_pct, 1),
+        "cup_depth_pct":    round(cup_depth * 100, 1),
+        "handle_depth_pct": round(handle_depth * 100, 1),
+        "cup_bars":         cup_bars,
+        "target":           round(target, 2),
+        "breaking_out":     breaking_out,
+        "description": (
+            f"Cup & Handle: {cup_bars}-bar cup, depth {cup_depth*100:.0f}% "
+            f"(bottom ₹{bottom:,.0f}). "
+            f"Right rim ₹{right_rim:,.0f} ({rim_diff_pct:.1f}% from left rim ₹{left_rim:,.0f}). "
+            f"Handle {handle_depth*100:.1f}% deep. "
+            f"{'Breaking out ↑' if breaking_out else 'Watch for break above ₹' + str(round(right_rim, 0))}. "
+            f"Target ₹{target:,.0f}."
+        ),
+    }
 
 
 # ── Pattern 8: Inverse Head & Shoulders ──────────────────────────────────────
