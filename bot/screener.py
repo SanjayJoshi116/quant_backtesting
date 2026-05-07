@@ -102,27 +102,41 @@ def run_scan(watchlist: list[str] = None,
             sig["signal_id"] = log_signal(sig)
             alerts.append(sig)
 
-        # ── Chart patterns (same indicators, no extra fetch) ──────────────────
-        # Only collect if we haven't hit the email cap yet
-        if len(patterns) < max_patterns:
-            try:
-                found = scan_patterns(ind)
-                for pat in found:
-                    if min_pattern_confidence == "HIGH" and pat["confidence"] != "HIGH":
-                        continue
-                    pat["ticker"] = ticker
-                    pat["sector"] = get_sector(ticker)
-                    patterns.append(pat)
-                    if len(patterns) >= max_patterns:
-                        break
-            except Exception:
-                pass
+        # ── Chart patterns: scan ALL stocks, rank later ───────────────────────
+        # DO NOT cap here — stopping early means stocks late in the list
+        # are never checked. Collect everything, rank by quality, cap at end.
+        try:
+            found = scan_patterns(ind)
+            for pat in found:
+                if min_pattern_confidence == "HIGH" and pat["confidence"] != "HIGH":
+                    continue
+                pat["ticker"]       = ticker
+                pat["sector"]       = get_sector(ticker)
+                # Quality score for ranking: breakout > watch; more bars > fewer
+                pat["_quality"] = (
+                    3 if pat.get("breaking_out") else 1
+                ) + (
+                    2 if pat["confidence"] == "HIGH" else 0
+                ) + min(pat.get("bars_forming", pat.get("pennant_bars",
+                        pat.get("flag_bars", pat.get("cup_bars", 5)))) / 20, 2)
+                patterns.append(pat)
+        except Exception:
+            pass
 
     if failed and verbose:
         print(f"\n  Could not process: {', '.join(failed)}")
         print(f"  Signals found: {len(alerts)}  |  Patterns found: {len(patterns)}")
 
     alerts.sort(key=lambda s: (-s["score"], s["direction"]))
-    patterns.sort(key=lambda p: (0 if p["confidence"] == "HIGH" else 1, p["pattern"]))
+
+    # Rank ALL collected patterns by quality score, then cap for email
+    patterns.sort(key=lambda p: -p.get("_quality", 0))
+    # Clean internal score before returning
+    for p in patterns:
+        p.pop("_quality", None)
+    patterns = patterns[:max_patterns]
+
+    if verbose:
+        print(f"  Signals found: {len(alerts)}  |  Patterns found (top {max_patterns}): {len(patterns)}")
 
     return {"signals": alerts, "patterns": patterns}

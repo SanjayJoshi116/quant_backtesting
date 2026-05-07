@@ -153,6 +153,7 @@ def patterns(
 
     results: list[dict] = []
     failed:  list[str]  = []
+    all_patterns: list[dict] = []  # collect ALL before capping
 
     for ticker in tqdm(scan_list, desc="Scanning patterns", ncols=70):
         try:
@@ -168,17 +169,27 @@ def patterns(
             for p in pats:
                 if min_confidence == "HIGH" and p["confidence"] != "HIGH":
                     continue
-                results.append({"ticker": ticker, **p})
+                p["ticker"] = ticker
+                # Quality score: breakout + confidence + pattern maturity
+                p["_q"] = (3 if p.get("breaking_out") else 1) + \
+                           (2 if p["confidence"] == "HIGH" else 0) + \
+                           min(p.get("bars_forming", p.get("cup_bars",
+                               p.get("pennant_bars", p.get("flag_bars", 5)))) / 20, 2)
+                all_patterns.append(p)
         except Exception as e:
             failed.append(ticker)
 
     # Sort: HIGH first, then by pattern type
     results.sort(key=lambda x: (0 if x["confidence"] == "HIGH" else 1, x["pattern"]))
 
+    # Rank by quality score across ALL stocks, then take top N
+    all_patterns.sort(key=lambda p: -p.pop("_q", 0))
+    results = all_patterns  # already ranked, no cap for CLI (show all)
+
     if not results:
         typer.echo("  No patterns found at the selected confidence level.")
     else:
-        typer.echo(f"  Found {len(results)} pattern(s):\n")
+        typer.echo(f"  Found {len(results)} pattern(s) across {len(scan_list)} stocks:\n")
         _CONF_COLOR = {"HIGH": "🟢", "MODERATE": "🟡"}
         for r in results:
             icon = _CONF_COLOR.get(r["confidence"], "⚪")
