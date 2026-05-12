@@ -13,7 +13,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import warnings
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -46,9 +46,47 @@ def _csv_path(ticker: str) -> Path:
     return _RAW / f"{_safe_name(ticker)}.csv"
 
 
+def _last_nse_close() -> datetime:
+    """
+    Return the datetime of the most recent completed NSE session (15:30 IST).
+    Skips weekends — if today is Saturday/Sunday returns Friday's close.
+    """
+    IST = timezone(timedelta(hours=5, minutes=30))
+    now_ist = datetime.now(IST)
+
+    # Build today's close time in IST
+    close_today = now_ist.replace(hour=15, minute=30, second=0, microsecond=0)
+
+    # If market hasn't closed yet today → last close was yesterday (or earlier)
+    ref = close_today if now_ist >= close_today else close_today - timedelta(days=1)
+
+    # Roll back past weekends (Saturday=5, Sunday=6)
+    while ref.weekday() >= 5:
+        ref -= timedelta(days=1)
+
+    return ref
+
+
 def _is_fresh(path: Path, ttl_hours: int) -> bool:
+    """
+    Market-aware freshness check.
+    A cached file is stale if the last NSE session closed AFTER it was written.
+    This guarantees re-fetch once per trading day after market close (15:30 IST).
+    """
     if not path.exists():
         return False
+
+    mtime = datetime.fromtimestamp(
+        path.stat().st_mtime,
+        tz=timezone(timedelta(hours=5, minutes=30))   # compare in IST
+    )
+    last_close = _last_nse_close()
+
+    # Stale if the file was written before the last completed session
+    if mtime < last_close:
+        return False
+
+    # Within the same session: also apply TTL as a safety net
     age_h = (datetime.now().timestamp() - path.stat().st_mtime) / 3600
     return age_h < ttl_hours
 
@@ -91,6 +129,7 @@ def _clean(raw: pd.DataFrame, min_bars: int) -> pd.DataFrame | None:
     df.dropna(inplace=True)
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "Date"
+    df = df[~df.index.duplicated(keep="last")]   # drop duplicate dates
     df = df[df["Close"] > 0]
     if len(df) < min_bars:
         return None
