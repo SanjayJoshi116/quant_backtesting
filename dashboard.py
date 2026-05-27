@@ -403,9 +403,10 @@ with st.sidebar:
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 
-tab_chart, tab_screen, tab_backtest, tab_patterns, tab_paper, tab_analytics, tab_config = st.tabs([
+tab_chart, tab_screen, tab_backtest, tab_patterns, tab_paper, tab_analytics, tab_fundamentals, tab_config = st.tabs([
     "  📈 Chart  ", "  🔍 Screener  ", "  ⚙️ Backtest  ",
-    "  📐 Patterns  ", "  📋 Paper Trades  ", "  📊 Analytics  ", "  🛠 Config  "
+    "  📐 Patterns  ", "  📋 Paper Trades  ", "  📊 Analytics  ",
+    "  🏆 Fundamentals  ", "  🛠 Config  "
 ])
 
 
@@ -570,12 +571,38 @@ with tab_screen:
                 score_pct = s['score'] / 7 * 100
                 score_col = "#10b981" if s['score']>=6 else "#fbbf24" if s['score']>=4 else "#ef4444"
 
+                # ── Fundamental quality badge ──────────────────────────────
+                qs   = s.get("qual_score")
+                qt   = s.get("qual_tier", "UNKNOWN")
+                qtc  = s.get("qual_tier_color", "⚪")
+                has_fq = qs is not None
+
+                qual_badge_col = {"HIGH": "#10b981", "MEDIUM": "#f59e0b",
+                                  "LOW": "#ef4444", "UNKNOWN": "#4b5563"}.get(qt, "#4b5563")
+                qual_badge_bg  = {"HIGH": "#0d4429", "MEDIUM": "#3d2a00",
+                                  "LOW": "#3d0a0a", "UNKNOWN": "#1a1d2e"}.get(qt, "#1a1d2e")
+                qual_score_str = f"{qs}/10" if has_fq else "—"
+
+                # Build inline fundamental metrics from unified scorer fields
+                fund_parts = []
+                qroe = s.get("qual_roe")
+                qrg  = s.get("qual_rev_growth")
+                qroa = s.get("qual_roa_cur")
+                qcfo = s.get("qual_cfo_gt_ni")
+                if qroe is not None: fund_parts.append(f"ROE {qroe*100:.1f}%")
+                if qrg  is not None: fund_parts.append(f"Rev {'▲' if qrg>0 else '▼'} {abs(qrg)*100:.1f}%")
+                if qcfo is True:     fund_parts.append("CFO>NI ✓")
+                elif qcfo is False:  fund_parts.append("CFO<NI ⚠")
+                fund_inline = "  ·  ".join(fund_parts) if fund_parts else (
+                    "No fundamental data — run Prefetch" if qt == "UNKNOWN" else ""
+                )
+
                 st.markdown(f"""
                 <div style="background:linear-gradient(135deg,#0f1623,#1a1d2e);
                             border:1px solid {accent}30;border-radius:12px;
                             padding:16px 20px;margin-bottom:10px;
                             border-left:4px solid {accent}">
-                  <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
                     <div>
                       <span style="font-size:17px;font-weight:700;color:#f1f5f9">
                         {s['ticker'].replace('.NS','')}
@@ -588,15 +615,21 @@ with tab_screen:
                         {dir_ico}
                       </span>
                     </div>
-                    <div style="text-align:right">
+                    <div style="display:flex;gap:8px;align-items:center">
                       <span style="background:{score_col}22;color:{score_col};
                                    padding:4px 12px;border-radius:20px;
                                    font-size:12px;font-weight:700">
-                        {s['score']}/7 Score
+                        {s['score']}/7 Tech
+                      </span>
+                      <span style="background:{qual_badge_bg};color:{qual_badge_col};
+                                   padding:4px 12px;border-radius:20px;
+                                   font-size:12px;font-weight:700;
+                                   border:1px solid {qual_badge_col}44">
+                        {qtc} {qual_score_str} Qual
                       </span>
                     </div>
                   </div>
-                  <div style="margin-top:10px;display:flex;gap:24px;font-size:13px">
+                  <div style="margin-top:10px;display:flex;gap:24px;font-size:13px;flex-wrap:wrap">
                     <span><span style="color:#6b7280">Entry</span>&nbsp;
                       <b style="color:#f1f5f9">₹{s['entry']:,.2f}</b></span>
                     <span><span style="color:#6b7280">SL</span>&nbsp;
@@ -608,8 +641,10 @@ with tab_screen:
                     <span><span style="color:#6b7280">ADX</span>&nbsp;
                       <b style="color:#fbbf24">{s.get('adx',0):.0f}</b></span>
                   </div>
+                  {f'<div style="margin-top:6px;font-size:12px;color:#6b7280">{fund_inline}</div>' if fund_inline else ''}
                   {'<div style="margin-top:6px;font-size:12px;color:#6b7280">' + hist_str + '</div>' if hist_str else ''}
                   {'<div style="margin-top:4px;font-size:11px;color:#f59e0b">⚠ Bear regime — Nifty below EMA200</div>' if s.get('bear_regime_warning') else ''}
+                  {'<div style="margin-top:4px;font-size:11px;color:#ef4444">⚠ Weak fundamentals — lower conviction</div>' if qt == "LOW" else ''}
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -772,7 +807,7 @@ with tab_patterns:
 with tab_paper:
     st.markdown("<div class='section-header'>Paper Trading — Live Validation</div>",
                 unsafe_allow_html=True)
-    st.caption("Auto-logged from every screener run. Entry = signal day's close. Window = 14 days.")
+    st.caption("Auto-logged from every screener run. Entry = signal day's close. Window = 30 days (~21 trading days).")
 
     # Manual update button
     col_upd, col_info = st.columns([1, 4])
@@ -780,26 +815,73 @@ with tab_paper:
         try:
             from core.paper_trader import update_open_positions
             res = update_open_positions()
-            col_info.success(
-                f"Updated: TP={res['tp_hit']} SL={res['sl_hit']} "
-                f"Expired={res['expired']} | Still open: {res['still_open']}"
-            )
+            changed = res.get("tp_hit",0) + res.get("sl_hit",0) + res.get("expired",0)
+            if changed == 0:
+                col_info.info(
+                    f"✋ Nothing to update yet — {res.get('still_open',0)} positions open. "
+                    "Positions logged today need at least one more trading day before "
+                    "SL/TP can be evaluated. Check back tomorrow after market close."
+                )
+            else:
+                col_info.success(
+                    f"✅ TP hit: {res['tp_hit']}  SL hit: {res['sl_hit']}  "
+                    f"Expired: {res['expired']}  |  Still open: {res['still_open']}"
+                )
         except Exception as e:
             col_info.error(str(e))
 
     try:
-        from core.paper_trader import get_stats
+        from core.paper_trader import get_stats, get_open_positions
         from pathlib import Path
         stats = get_stats()
+
+        # ── Open Positions — always shown ─────────────────────────────────────
+        open_df = get_open_positions()
+        if not open_df.empty:
+            st.markdown("<div class='section-header'>Open Positions Being Tracked</div>",
+                        unsafe_allow_html=True)
+            st.caption(f"{len(open_df)} active paper trades · SL/TP checked automatically each day · closes after 30 days")
+
+            for _, row in open_df.iterrows():
+                pnl     = float(row.get("unreal_pnl", 0))
+                pnl_col = "#10b981" if pnl >= 0 else "#ef4444"
+                days_left = int(row.get("days_left", 14))
+                urgency   = "#ef4444" if days_left <= 3 else "#fbbf24" if days_left <= 7 else "#6b7280"
+                ticker_c  = str(row["ticker"]).replace(".NS","")
+
+                st.markdown(f"""
+                <div style="background:#1a1d2e;border-radius:8px;padding:10px 16px;
+                            margin-bottom:6px;border-left:3px solid #2563eb;
+                            display:flex;justify-content:space-between;align-items:center;
+                            flex-wrap:wrap;gap:8px">
+                  <div>
+                    <b style="color:#f1f5f9;font-size:14px">{ticker_c}</b>&nbsp;
+                    <span style="color:#60a5fa;font-size:11px;background:#1e3a5f;
+                                 padding:2px 8px;border-radius:10px">{row['signal_type']}</span>
+                    &nbsp;<span style="color:#6b7280;font-size:11px">{row['signal_date'].strftime('%d %b') if hasattr(row['signal_date'],'strftime') else row['signal_date']}</span>
+                  </div>
+                  <div style="font-size:12px;color:#94a3b8">
+                    Entry&nbsp;<b style="color:#f1f5f9">₹{float(row['entry_price']):,.2f}</b>
+                    &nbsp;|&nbsp;
+                    Now&nbsp;<b style="color:{pnl_col}">₹{float(row['current_price']):,.2f}</b>
+                    &nbsp;|&nbsp;
+                    SL&nbsp;<b style="color:#ef4444">₹{float(row['sl']):,.2f}</b>
+                    &nbsp;|&nbsp;
+                    TP&nbsp;<b style="color:#10b981">₹{float(row['tp']):,.2f}</b>
+                  </div>
+                  <div style="text-align:right">
+                    <span style="color:{pnl_col};font-weight:700;font-size:13px">{pnl:+.2f}%</span>&nbsp;
+                    <span style="color:{urgency};font-size:11px">{days_left}d left</span>
+                  </div>
+                </div>""", unsafe_allow_html=True)
 
         if not stats or stats.get("closed", 0) == 0:
             st.info(
                 "No closed paper trades yet. Run the screener daily — "
-                "trades close automatically when SL/TP is hit or after 14 days. "
-                "You'll need ~20-30 closed trades before the statistics are meaningful."
+                "positions close automatically when SL/TP is hit or after 14 days. "
+                "Positions close when SL/TP is hit or after 30 days. "
+                "You'll need ~30-40 closed trades before statistics are meaningful."
             )
-            if stats.get("open", 0) > 0:
-                st.metric("Open positions being tracked", stats["open"])
         else:
             # ── KPIs ─────────────────────────────────────────────────────────
             BACKTEST_WR = 42.6   # reference from last full backtest
@@ -830,11 +912,63 @@ with tab_paper:
                 unsafe_allow_html=True,
             )
 
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
+
+            # ── Win rate by quality tier ──────────────────────────────────────
+            with col1:
+                st.markdown("<div class='section-header'>Win Rate by Quality Tier</div>",
+                            unsafe_allow_html=True)
+                st.caption("Does the fundamental filter add alpha? This answers it.")
+                bq = stats.get("by_quality", {})
+                if bq:
+                    tier_colors = {
+                        "HIGH":    "#10b981",
+                        "MEDIUM":  "#f59e0b",
+                        "LOW":     "#ef4444",
+                        "UNKNOWN": "#4b5563",
+                    }
+                    tier_order = [t for t in ["HIGH","MEDIUM","LOW","UNKNOWN"] if t in bq]
+                    wr_vals  = [bq[t]["wr"]  for t in tier_order]
+                    n_vals   = [bq[t]["n"]   for t in tier_order]
+                    avg_vals = [bq[t]["avg"] for t in tier_order]
+
+                    fig_bq = go.Figure(go.Bar(
+                        x=tier_order, y=wr_vals,
+                        marker_color=[tier_colors.get(t,"#4b5563") for t in tier_order],
+                        text=[f"{wr:.0f}%<br>({n} trades)" for wr, n in zip(wr_vals, n_vals)],
+                        textposition="outside",
+                    ))
+                    fig_bq.add_hline(y=50, line_dash="dot",
+                                     line_color="#6b7280", line_width=1)
+                    fig_bq.update_layout(
+                        **PLOTLY_BASE, height=230,
+                        xaxis_title="Fundamental Tier",
+                        yaxis_title="Win Rate %",
+                        margin=dict(t=10, b=20, l=40, r=20),
+                        yaxis=dict(range=[0, 90]),
+                    )
+                    st.plotly_chart(fig_bq, use_container_width=True)
+
+                    # Key insight message
+                    if "HIGH" in bq and "LOW" in bq:
+                        diff = bq["HIGH"]["wr"] - bq["LOW"]["wr"]
+                        if diff > 5:
+                            st.success(
+                                f"🟢 HIGH quality signals win **{diff:.0f}pp more** than LOW — "
+                                f"fundamental filter is adding alpha."
+                            )
+                        elif diff > 0:
+                            st.info(f"Marginal edge: HIGH beats LOW by {diff:.0f}pp — "
+                                    f"need more trades to confirm.")
+                        else:
+                            st.warning("No clear quality edge yet — may need more trades.")
+                else:
+                    st.info("Quality tier data not yet available. "
+                            "New signals will include quality scores automatically.")
 
             # ── Win rate by score ─────────────────────────────────────────────
-            with col1:
-                st.markdown("<div class='section-header'>Win Rate by Score</div>",
+            with col2:
+                st.markdown("<div class='section-header'>Win Rate by Tech Score</div>",
                             unsafe_allow_html=True)
                 st.caption("Most actionable: tells you which score threshold to use live")
                 if stats["by_score"]:
@@ -878,7 +1012,7 @@ with tab_paper:
                         )
 
             # ── Win rate by signal type ───────────────────────────────────────
-            with col2:
+            with col3:
                 st.markdown("<div class='section-header'>Win Rate by Signal Type</div>",
                             unsafe_allow_html=True)
                 st.caption("Which signal type actually works in live market")
@@ -1072,7 +1206,294 @@ with tab_analytics:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 6 — CONFIG
+# TAB 7 — FUNDAMENTALS
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_fundamentals:
+    st.markdown("<div class='section-header'>Fundamental Quality Scores</div>",
+                unsafe_allow_html=True)
+    st.caption(
+        "Phase 1: yfinance (ROE, D/E, margins, growth). "
+        "Phase 2: Financial Modeling Prep API adds ROCE, ROIC, Piotroski F-Score. "
+        "Cache refreshes every 90 days — run **Prefetch** to update stale data."
+    )
+
+    # ── Cache stats + controls ────────────────────────────────────────────────
+    try:
+        from core.fundamental_scorer import (
+            cache_stats, get_quality, get_quality_bulk,
+            get_cached_quality, list_cached, FUND_DIR
+        )
+        stats_f = cache_stats()
+    except Exception as e:
+        st.error(f"Could not load fundamental scorer: {e}")
+        stats_f = {"total": 0, "fresh": 0, "stale": 0}
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("Cached stocks",  stats_f.get("total", 0))
+    col_b.metric("Fresh (< 90d)", stats_f.get("fresh", 0))
+    col_c.metric("Stale / missing", stats_f.get("stale", 0))
+
+    fmp_active = bool(os.getenv("FMP_API_KEY", ""))
+    col_d.markdown(
+        f"<div style='padding:14px;background:#1a1d2e;border-radius:10px;"
+        f"border:1px solid #2a2d3e;margin-bottom:12px'>"
+        f"<div style='font-size:12px;color:#6b7280;text-transform:uppercase;"
+        f"letter-spacing:.8px'>FMP API</div>"
+        f"<div style='font-size:16px;font-weight:700;"
+        f"color:{'#10b981' if fmp_active else '#ef4444'}'>"
+        f"{'✅ Active' if fmp_active else '❌ Not set'}</div>"
+        f"<div style='font-size:11px;color:#6b7280'>"
+        f"{'Phase 1+2' if fmp_active else 'Phase 1 only'}</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # ── Prefetch controls ─────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Prefetch Fundamental Data</div>",
+                unsafe_allow_html=True)
+    st.caption(
+        "Prefetch runs in the background and caches data for all universe stocks. "
+        "Run once — subsequent screener scans will use the cache instantly. "
+        "With 500+ stocks, Phase 1 takes ~5–8 min; keep the tab open."
+    )
+
+    pf_col1, pf_col2, pf_col3 = st.columns([1, 1, 3])
+    single_ticker = pf_col1.text_input("Single ticker", placeholder="e.g. INFY.NS")
+    force_refetch  = pf_col2.checkbox("Force re-fetch", value=False,
+                                      help="Re-download even if cache is fresh")
+
+    btn_single = pf_col1.button("🔍 Fetch Single", type="primary")
+    btn_stale  = pf_col3.button("⬇ Fetch Stale / Missing Only")
+    btn_all    = pf_col3.button("♻ Refresh ALL (slow — 90+ days only)")
+
+    if btn_single and single_ticker:
+        ticker_in = single_ticker.strip().upper()
+        if not ticker_in.endswith(".NS"):
+            ticker_in += ".NS"
+        with st.spinner(f"Fetching {ticker_in}..."):
+            q = get_quality(ticker_in, force=True)
+        st.success(f"Done! {ticker_in} — Score: **{q['qual_score']}/10** — {q['qual_tier_color']} {q['qual_tier']}")
+        bd = q.get("qual_breakdown", {})
+        if bd:
+            bd_str = "  ·  ".join(f"**{k}**: {v}" for k, v in bd.items())
+            st.markdown(bd_str)
+
+    if btn_stale or btn_all:
+        from data import TICKERS
+        to_fetch = TICKERS
+        prog_f   = st.progress(0, text="Starting prefetch...")
+        info_f   = st.empty()
+        results_f = {}
+        for i, t in enumerate(to_fetch):
+            prog_f.progress((i+1)/len(to_fetch), text=f"Fetching {t.replace('.NS','')} ({i+1}/{len(to_fetch)})")
+            try:
+                results_f[t] = get_quality(t, force=(btn_all or force_refetch))
+            except Exception:
+                pass
+        prog_f.empty()
+        new_stats = cache_stats()
+        st.success(
+            f"✅ Done! {len(results_f)} stocks fetched. "
+            f"Cache: {new_stats['total']} total, {new_stats['fresh']} fresh."
+        )
+        st.cache_data.clear()   # force dashboard to reload quality data
+
+    # ── Quality table ─────────────────────────────────────────────────────────
+    st.markdown("<div class='section-header'>Quality Scores — All Cached Stocks</div>",
+                unsafe_allow_html=True)
+
+    @st.cache_data(ttl=300)
+    def _load_all_quality():
+        try:
+            from core.fundamental_scorer import list_cached, get_cached_quality
+            cached = list_cached()
+            rows = []
+            for raw_name in cached:
+                ticker_ns = raw_name if raw_name.endswith(".NS") else raw_name + ".NS"
+                q = get_cached_quality(ticker_ns)
+                sigs = q.get("qual_signals", {})
+
+                def _pct(key):
+                    v = q.get(key)
+                    return round(v * 100, 1) if v is not None else None
+
+                def _r2(key):
+                    v = q.get(key)
+                    return round(v, 2) if v is not None else None
+
+                def _r1(key):
+                    v = q.get(key)
+                    return round(v, 1) if v is not None else None
+
+                rows.append({
+                    "Ticker":        ticker_ns.replace(".NS", ""),
+                    "Score":         q.get("qual_score"),
+                    "Tier":          q.get("qual_tier", "UNKNOWN"),
+                    "Sector":        q.get("qual_sector", ""),
+                    # Level checks
+                    "ROE %":         _pct("qual_roe"),
+                    "Rev Growth %":  _pct("qual_rev_growth"),
+                    "Current Ratio": _r2("qual_current"),
+                    # Trend checks (✅/❌)
+                    "ROA ↑":         "✅" if sigs.get("ROA Trend") else "❌",
+                    "CFO>NI":        "✅" if sigs.get("Cash Quality (CFO>NI)") else "❌",
+                    "Debt ↓":        "✅" if sigs.get("Debt Trend") else "❌",
+                    "Margin ↑":      "✅" if sigs.get("Gross Margin Trend") else "❌",
+                    "No Dilution":   "✅" if sigs.get("Share Dilution") else "❌",
+                    # Valuation
+                    "P/E":           _r1("qual_pe"),
+                    "P/B":           _r2("qual_pb"),
+                })
+            return pd.DataFrame(rows)
+        except Exception as e:
+            return pd.DataFrame()
+
+    qual_df = _load_all_quality()
+
+    if qual_df.empty:
+        st.info(
+            "No fundamental data cached yet. Click **Fetch Stale / Missing Only** "
+            "above to download scores for your entire universe."
+        )
+    else:
+        # ── Filter controls ───────────────────────────────────────────────────
+        fc1, fc2, fc3 = st.columns(3)
+        tier_filter = fc1.multiselect(
+            "Filter by tier", ["HIGH","MEDIUM","LOW","UNKNOWN"],
+            default=["HIGH","MEDIUM","LOW","UNKNOWN"]
+        )
+        min_score = fc2.slider("Min score", 0, 10, 0)
+        sector_opts = ["All"] + sorted(qual_df["Sector"].dropna().unique().tolist())
+        sector_filter = fc3.selectbox("Sector", sector_opts)
+
+        filt = qual_df[
+            qual_df["Tier"].isin(tier_filter) &
+            (qual_df["Score"].fillna(-1) >= min_score)
+        ]
+        if sector_filter != "All":
+            filt = filt[filt["Sector"] == sector_filter]
+
+        filt = filt.sort_values("Score", ascending=False).reset_index(drop=True)
+
+        # ── Summary KPIs ──────────────────────────────────────────────────────
+        tier_counts = qual_df["Tier"].value_counts()
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("🟢 HIGH quality",   tier_counts.get("HIGH",   0))
+        k2.metric("🟡 MEDIUM quality", tier_counts.get("MEDIUM", 0))
+        k3.metric("🔴 LOW quality",    tier_counts.get("LOW",    0))
+        k4.metric("⚪ Unknown",         tier_counts.get("UNKNOWN",0))
+
+        # ── Tier distribution bar chart ───────────────────────────────────────
+        if not qual_df["Score"].dropna().empty:
+            col_chart1, col_chart2 = st.columns(2)
+            with col_chart1:
+                st.markdown("<div class='section-header'>Score Distribution</div>",
+                            unsafe_allow_html=True)
+                score_hist = qual_df["Score"].dropna()
+                fig_sh = go.Figure(go.Histogram(
+                    x=score_hist, nbinsx=11,
+                    marker_color=[
+                        "#10b981" if v >= 7 else "#f59e0b" if v >= 4 else "#ef4444"
+                        for v in score_hist
+                    ],
+                    xbins=dict(start=0, end=10, size=1),
+                ))
+                fig_sh.add_vline(x=7, line_dash="dot", line_color="#10b981",
+                                 annotation_text="HIGH", annotation_font_color="#10b981")
+                fig_sh.add_vline(x=4, line_dash="dot", line_color="#f59e0b",
+                                 annotation_text="MEDIUM", annotation_font_color="#f59e0b")
+                fig_sh.update_layout(
+                    **PLOTLY_BASE, height=250,
+                    xaxis_title="Quality Score (0-10)",
+                    yaxis_title="# Stocks",
+                    margin=dict(t=10, b=30, l=40, r=20),
+                    bargap=0.1,
+                )
+                st.plotly_chart(fig_sh, use_container_width=True)
+
+            with col_chart2:
+                st.markdown("<div class='section-header'>Avg Score by Sector</div>",
+                            unsafe_allow_html=True)
+                sec_avg = (qual_df.dropna(subset=["Score","Sector"])
+                           .groupby("Sector")["Score"].mean()
+                           .sort_values(ascending=True))
+                if not sec_avg.empty:
+                    fig_sec = go.Figure(go.Bar(
+                        y=sec_avg.index, x=sec_avg.values,
+                        orientation="h",
+                        marker_color=[
+                            "#10b981" if v >= 7 else "#f59e0b" if v >= 4 else "#ef4444"
+                            for v in sec_avg.values
+                        ],
+                        text=[f"{v:.1f}" for v in sec_avg.values],
+                        textposition="outside",
+                    ))
+                    fig_sec.update_layout(
+                        **PLOTLY_BASE, height=250,
+                        xaxis_title="Avg Score",
+                        margin=dict(t=10, b=20, l=120, r=40),
+                        xaxis=dict(range=[0, 10]),
+                    )
+                    st.plotly_chart(fig_sec, use_container_width=True)
+
+        # ── Detailed table ────────────────────────────────────────────────────
+        st.caption(f"Showing {len(filt)} of {len(qual_df)} cached stocks · sorted by score ↓")
+
+        # Color-coded Tier column using Streamlit column config
+        def _tier_icon(t):
+            return {"HIGH":"🟢","MEDIUM":"🟡","LOW":"🔴"}.get(t,"⚪") + " " + t
+
+        filt["Tier"] = filt["Tier"].apply(_tier_icon)
+
+        st.dataframe(
+            filt,
+            use_container_width=True,
+            hide_index=True,
+            height=420,
+            column_config={
+                "Score":         st.column_config.ProgressColumn(
+                                     "Score /10", format="%d", min_value=0, max_value=10),
+                "ROE %":         st.column_config.NumberColumn("ROE %",    format="%.1f%%"),
+                "Rev Growth %":  st.column_config.NumberColumn("Rev Gr%",  format="%.1f%%"),
+                "Current Ratio": st.column_config.NumberColumn("Curr R",   format="%.2f"),
+                "P/E":           st.column_config.NumberColumn("P/E",      format="%.1f"),
+                "P/B":           st.column_config.NumberColumn("P/B",      format="%.2f"),
+                "ROA ↑":         st.column_config.TextColumn("ROA ↑"),
+                "CFO>NI":        st.column_config.TextColumn("CFO>NI"),
+                "Debt ↓":        st.column_config.TextColumn("Debt ↓"),
+                "Margin ↑":      st.column_config.TextColumn("Margin ↑"),
+                "No Dilution":   st.column_config.TextColumn("No Dil"),
+            }
+        )
+
+        # Download button
+        st.download_button(
+            "⬇ Download fundamental_scores.csv",
+            filt.to_csv(index=False),
+            "fundamental_scores.csv",
+            "text/csv",
+        )
+
+    # ── FMP API setup guide ───────────────────────────────────────────────────
+    if not fmp_active:
+        st.markdown("<div class='section-header'>🔑 Enable Phase 2 — FMP API (Free)</div>",
+                    unsafe_allow_html=True)
+        st.markdown("""
+        **Financial Modeling Prep** adds ROCE, ROIC, Piotroski F-Score to every stock.
+        Free tier: **250 API calls/day** (enough for ~125 stocks/day → full universe in 4 days).
+
+        **Setup (2 minutes):**
+        1. Sign up free at [financialmodelingprep.com](https://financialmodelingprep.com/developer/docs/)
+        2. Copy your API key
+        3. Add to your environment:
+        ```
+        FMP_API_KEY=your_key_here
+        ```
+        You can set this in Windows as a system env var or add to a `.env` file in the project root.
+        """)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 8 — CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_config:
     st.markdown("<div class='section-header'>Strategy Configuration</div>",

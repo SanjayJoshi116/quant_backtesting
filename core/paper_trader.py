@@ -24,12 +24,16 @@ import numpy as np
 import pandas as pd
 
 PAPER_LOG = Path("logs/paper_trades.csv")
-MAX_DAYS  = 14   # 2-week window
+MAX_DAYS  = 30   # 30 calendar days (~21 trading days)
+# Backtest data shows: SL median=14 trading days, TP median=25 trading days.
+# 14-day window expires 70% of trades before SL/TP — too noisy.
+# 30-day window expires only 30% — captures most meaningful outcomes.
 
 COLUMNS = [
     "signal_date", "ticker",       "signal_type", "direction",
     "entry_price", "sl",           "tp",          "rr",
     "score",       "sector",
+    "qual_score",  "qual_tier",    # fundamental quality at time of signal
     "status",                                      # OPEN / TP_HIT / SL_HIT / EXPIRED
     "exit_price",  "exit_date",    "exit_reason",
     "pnl_pct",     "days_held",
@@ -92,6 +96,8 @@ def log_new_signals(signals: list[dict]) -> int:
             "rr":          sig.get("rr",    0),
             "score":       sig.get("score", 0),
             "sector":      sig.get("sector", ""),
+            "qual_score":  sig.get("qual_score", ""),   # fundamental score at signal time
+            "qual_tier":   sig.get("qual_tier",  "UNKNOWN"),
             "status":      "OPEN",
             "exit_price":  "",  "exit_date":   "",
             "exit_reason": "",  "pnl_pct":     "",  "days_held": "",
@@ -202,6 +208,52 @@ def update_open_positions() -> dict:
     return counts
 
 
+def get_open_positions() -> pd.DataFrame:
+    """
+    Return all OPEN paper positions with current price and unrealised P&L.
+    Called by the dashboard to show the live watchlist.
+    """
+    df = _load()
+    if df.empty:
+        return pd.DataFrame()
+
+    open_df = df[df["status"] == "OPEN"].copy()
+    if open_df.empty:
+        return pd.DataFrame()
+
+    from core.data import fetch_or_load
+    today = pd.Timestamp.today().normalize()
+
+    current_prices, unreal_pnl, days_open = [], [], []
+
+    for _, row in open_df.iterrows():
+        entry  = float(row["entry_price"])
+        signal = pd.Timestamp(row["signal_date"])
+        days   = (today - signal).days
+
+        try:
+            ohlc = fetch_or_load(str(row["ticker"]))
+            if ohlc is not None and not ohlc.empty:
+                cur = float(ohlc["Close"].iloc[-1])
+            else:
+                cur = entry
+        except Exception:
+            cur = entry
+
+        pnl = (cur - entry) / entry * 100
+        current_prices.append(round(cur, 2))
+        unreal_pnl.append(round(pnl, 2))
+        days_open.append(days)
+
+    open_df = open_df.copy()
+    open_df["current_price"] = current_prices
+    open_df["unreal_pnl"]    = unreal_pnl
+    open_df["days_open"]     = days_open
+    open_df["days_left"]     = MAX_DAYS - open_df["days_open"]
+
+    return open_df.sort_values("signal_date", ascending=False).reset_index(drop=True)
+
+
 def get_stats() -> dict:
     """
     Compute paper trading stats for the dashboard.
@@ -241,13 +293,14 @@ def get_stats() -> dict:
         "avg_loss":      round(float(losses["pnl_pct"].mean()), 2) if len(losses) > 0 else 0,
         "profit_factor": _pf(),
         "avg_days":      round(float(pd.to_numeric(closed["days_held"], errors="coerce").mean()), 1),
-        "by_score":   {},
-        "by_signal":  {},
-        "by_exit":    {},
-        "recent":     [],
+        "by_score":    {},
+        "by_signal":   {},
+        "by_quality":  {},   # breakdown by fundamental tier — key insight
+        "by_exit":     {},
+        "recent":      [],
     }
 
-    # By score — most actionable insight
+    # By technical score — most actionable insight
     closed["_score"] = pd.to_numeric(closed["score"], errors="coerce").fillna(0).astype(int)
     for score, grp in closed.groupby("_score"):
         wr  = (grp["pnl_pct"] > 0).mean() * 100
@@ -264,6 +317,28 @@ def get_stats() -> dict:
             "n": len(grp), "wr": round(wr, 1), "avg": round(avg, 2)
         }
 
+    # By fundamental quality tier — answers "does the fundamental filter add alpha?"
+    if "qual_tier" in closed.columns:
+        tier_order = ["HIGH", "MEDIUM", "LOW", "UNKNOWN"]
+        for tier in tier_order:
+            grp = closed[closed["qual_tier"] == tier]
+            if len(grp) == 0:
+                continue
+            grp_pnl = grp["pnl_pct"].dropna()
+            if len(grp_pnl) == 0:
+                continue
+            wr  = (grp_pnl > 0).mean() * 100
+            avg = grp_pnl.mean()
+            gp  = grp_pnl[grp_pnl > 0].sum()
+            gl  = abs(grp_pnl[grp_pnl <= 0].sum())
+            pf  = round(gp / gl, 2) if gl > 0 else 99.0
+            stats["by_quality"][tier] = {
+                "n":  len(grp_pnl),
+                "wr": round(wr, 1),
+                "avg": round(avg, 2),
+                "pf":  pf,
+            }
+
     # By exit reason
     for reason, grp in closed.groupby("exit_reason"):
         stats["by_exit"][str(reason)] = {
@@ -271,9 +346,14 @@ def get_stats() -> dict:
         }
 
     # 10 most recent closed trades
+    recent_cols = ["ticker", "signal_type", "entry_price",
+                   "exit_price", "pnl_pct", "exit_reason", "days_held"]
+    # Include qual columns if present
+    for col in ["qual_score", "qual_tier"]:
+        if col in closed.columns:
+            recent_cols.append(col)
     recent = (closed.sort_values("exit_date", ascending=False)
-              .head(10)[["ticker","signal_type","entry_price",
-                          "exit_price","pnl_pct","exit_reason","days_held"]]
+              .head(10)[recent_cols]
               .to_dict("records"))
     stats["recent"] = recent
 

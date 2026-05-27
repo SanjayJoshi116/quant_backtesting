@@ -54,6 +54,9 @@ def prepare_indicators(df: pd.DataFrame) -> pd.DataFrame:
     Returns a new DataFrame with all indicator columns appended.
     """
     df = df.copy()
+    # Drop duplicate dates silently — some yfinance downloads contain them
+    if df.index.duplicated().any():
+        df = df[~df.index.duplicated(keep="last")]
 
     # ── Core EMAs ─────────────────────────────────────────────────────────────
     df["EMA21"]  = EMAIndicator(close=df["Close"], window=21,  fillna=False).ema_indicator()
