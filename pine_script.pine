@@ -115,10 +115,18 @@ bo_candle_bull = close > open and close >= high * 0.96
 bo_candle_bear = close < open and close <= low  * 1.04
 
 // ─── MARKET REGIME FILTER ────────────────────────────────────────────────────
-nifty_close   = request.security(nifty_sym, "D", close,            lookahead=barmerge.lookahead_off)
-nifty_ema200  = request.security(nifty_sym, "D", ta.ema(close, regime_ema), lookahead=barmerge.lookahead_off)
-market_bull   = nifty_close > nifty_ema200   // Nifty above 200-day EMA = bull regime
-regime_ok     = not use_regime or market_bull // if filter disabled, always allow
+nifty_close   = request.security(nifty_sym, "D", close,                      lookahead=barmerge.lookahead_off)
+nifty_ema200  = request.security(nifty_sym, "D", ta.ema(close, regime_ema),  lookahead=barmerge.lookahead_off)
+nifty_ema50   = request.security(nifty_sym, "D", ta.ema(close, 50),          lookahead=barmerge.lookahead_off)
+
+// Three-state market regime:
+// BULL     = Nifty above EMA200 AND EMA50 above EMA200 (clear uptrend)
+// BEAR     = Nifty below EMA200 (below long-term MA)
+// SIDEWAYS = Nifty above EMA200 but EMA50 below EMA200 (no clear direction)
+market_bull     = nifty_close > nifty_ema200 and nifty_ema50 > nifty_ema200
+market_bear     = nifty_close < nifty_ema200
+market_sideways = not market_bull and not market_bear
+regime_ok       = not use_regime or market_bull  // only allow longs in bull regime
 
 // ─── FLAT BASE DETECTION ──────────────────────────────────────────────────────
 base_high_prev = ta.highest(high, base_period)[1]
@@ -191,6 +199,28 @@ breakout_short = use_bo and bear_trend and close < swing_low_bo
 
 sell_signal = (pullback_short or breakout_short) and no_pos
 
+// ─── SCORE FILTER — only show signal if score is better than open trade ────────
+// Prevents chart clutter: same or lower score while already in position = skip.
+// Flat position → always show. Better score while in position → show (upgrade).
+var int _open_long_score  = 0
+var int _open_short_score = 0
+
+// Reset scores when position closes
+if not in_long  and not buy_signal
+    _open_long_score  := 0
+if not in_short and not sell_signal
+    _open_short_score := 0
+
+// A signal is "worth showing" only if it improves on the current open trade score
+show_long  = buy_signal  and (not in_long  or signal_score   > _open_long_score)
+show_short = sell_signal and (not in_short or signal_score_s > _open_short_score)
+
+// Track score of current open trade
+if show_long
+    _open_long_score  := signal_score
+if show_short
+    _open_short_score := signal_score_s
+
 // ─── TRAILING STOP LOGIC (unchanged) ──────────────────────────────────────────
 var float entry_price    = na
 var float trail_high     = na
@@ -198,12 +228,12 @@ var float trail_low      = na
 var bool  trail_active_l = false
 var bool  trail_active_s = false
 
-if buy_signal
+if show_long
     entry_price    := close
     trail_high     := close
     trail_active_l := false
 
-if sell_signal
+if show_short
     entry_price    := close
     trail_low      := close
     trail_active_s := false
@@ -247,14 +277,13 @@ if in_short
         strategy.close("Short", comment="TP")
 
 // ─── ENTRIES (unchanged) ──────────────────────────────────────────────────────
-if buy_signal
+if show_long
     strategy.entry("Long", strategy.long,
-         comment = pullback_long  ? "PB-L"    :
-                   base_bo_long   ? "BASE-BO" : "BO-L")
+         comment = "LONG " + (pullback_long ? "PB-L" : base_bo_long ? "BASE-BO" : "BO-L"))
 
-if sell_signal
+if show_short
     strategy.entry("Short", strategy.short,
-         comment = pullback_short ? "PB-S" : "BO-S")
+         comment = "SHORT " + (pullback_short ? "PB-S" : "BO-S"))
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PRO UI LAYER — all visual additions below, zero logic change above
@@ -275,16 +304,19 @@ fill(e21_plot, e50_plot,
 // ─── BACKGROUND TINT WHEN IN TRADE ───────────────────────────────────────────
 bgcolor(in_long  ? color.new(color.green, 93) : in_short ? color.new(color.red,   93) : na, title="Trade Background")
 
-// ─── MESH FLIP LABELS ─────────────────────────────────────────────────────────
-plotshape(mesh_breaks_green, "Mesh → Green",
+// ─── EMA STRUCTURE LABELS ─────────────────────────────────────────────────────
+// These appear when EMA21 crosses EMA50 — shows structure change, NOT a trade.
+// They are small and informational only.
+// The actual LONG / SHORT trade entries are the large triangles below.
+plotshape(mesh_breaks_green, "EMA 21 > 50",
           shape.labelup, location.belowbar,
-          color.new(color.green, 0),
-          text="▲ BULL", textcolor=color.white, size=size.normal)
+          color.new(color.teal, 30),
+          text="EMA 21>50", textcolor=color.white, size=size.tiny)
 
-plotshape(mesh_breaks_red, "Mesh → Red",
+plotshape(mesh_breaks_red, "EMA 21 < 50",
           shape.labeldown, location.abovebar,
-          color.new(color.red, 0),
-          text="▼ BEAR", textcolor=color.white, size=size.normal)
+          color.new(color.maroon, 30),
+          text="EMA 21<50", textcolor=color.white, size=size.tiny)
 
 // ─── MESH BREAK EXIT MARKERS ──────────────────────────────────────────────────
 plotshape(mesh_breaks_red   and in_long,  "Mesh Break Long Exit",
@@ -294,36 +326,40 @@ plotshape(mesh_breaks_green and in_short, "Mesh Break Short Exit",
           shape.xcross, location.belowbar,
           color.new(color.lime, 0), size=size.small)
 
-// ─── ENTRY SIGNALS WITH PRICE + SCORE LABEL ───────────────────────────────────
-// Label format: "PB-L | 4892.50 | Score 5/6"
-long_label  = (pullback_long ? "PB-L"    :
-               base_bo_long  ? "BASE-BO" : "BO-L") +
-              " | " + str.tostring(math.round(close, 2)) +
-              " | " + str.tostring(signal_score) + "/7"
+// ─── TRADE ENTRY SIGNALS ──────────────────────────────────────────────────────
+// LARGE triangles = actual trade signals (rare, all conditions met)
+// LONG  ▲ = green triangle at bottom — entry point to BUY
+// SHORT ▼ = red triangle at top    — entry point to SELL SHORT
+// Label shows: LONG/SHORT | price | score | signal type (PB-L, BO-L etc.)
+long_label  = "LONG" +
+              " | ₹" + str.tostring(math.round(close, 2)) +
+              " | Score " + str.tostring(signal_score) + "/7" +
+              " | " + (pullback_long ? "PB-L" : base_bo_long ? "BASE-BO" : "BO-L")
 
-short_label = (pullback_short ? "PB-S" : "BO-S") +
-              " | " + str.tostring(math.round(close, 2)) +
-              " | " + str.tostring(signal_score_s) + "/6"
+short_label = "SHORT" +
+              " | ₹" + str.tostring(math.round(close, 2)) +
+              " | Score " + str.tostring(signal_score_s) + "/6" +
+              " | " + (pullback_short ? "PB-S" : "BO-S")
 
-plotshape(buy_signal,  "Long Entry",
+plotshape(show_long,  "LONG Entry",
           shape.triangleup, location.belowbar,
-          color.new(color.lime, 0), text="", size=size.normal)
+          color.new(color.lime, 0), text="", size=size.small)
 
-plotshape(sell_signal, "Short Entry",
+plotshape(show_short, "SHORT Entry",
           shape.triangledown, location.abovebar,
-          color.new(color.red, 0), text="", size=size.normal)
+          color.new(color.red, 0), text="", size=size.small)
 
-// Entry labels with full detail — offset below/above the triangle
-if buy_signal
-    label.new(bar_index, low - atr * 0.4,
+// Entry labels — only show when score filter passes (no clutter)
+if show_long
+    label.new(bar_index, low - atr * 0.3,
          text=long_label,
          color=color.new(color.green, 15),
          textcolor=color.white,
          style=label.style_label_up,
          size=size.small)
 
-if sell_signal
-    label.new(bar_index, high + atr * 0.4,
+if show_short
+    label.new(bar_index, high + atr * 0.3,
          text=short_label,
          color=color.new(color.red, 15),
          textcolor=color.white,
@@ -384,20 +420,22 @@ if barstate.islast
 
     table.cell(dash, 0, 2, "3H Trend",
          text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 2, bull_trend ? "BULLISH" : bear_trend ? "BEARISH" : "FLAT",
+    table.cell(dash, 1, 2, bull_trend ? "LONG SETUP" : bear_trend ? "SHORT SETUP" : "NO SETUP",
          text_color = bull_trend ? color.lime : bear_trend ? color.red : color.gray,
          text_size=size.small, text_halign=text.align_center)
     table.cell(dash, 2, 2,
-         bull_trend ? "EMA stack up" : bear_trend ? "EMA stack down" : "No stack",
+         bull_trend ? "EMA21>50>200 ↑" : bear_trend ? "EMA21<50<200 ↓" : "EMAs mixed",
          text_color=color.new(color.gray, 30), text_size=size.tiny)
 
     table.cell(dash, 0, 3, "Nifty regime",
          text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 3, market_bull ? "BULL ✓" : "BEAR ✗",
-         text_color = market_bull ? color.lime : color.red,
+    table.cell(dash, 1, 3,
+         market_bull ? "BULL" : market_bear ? "BEAR" : "SIDEWAYS",
+         text_color = market_bull ? color.lime : market_bear ? color.red : color.orange,
          text_size=size.small, text_halign=text.align_center)
     table.cell(dash, 2, 3,
-         (market_bull ? "Above" : "Below") + " EMA" + str.tostring(regime_ema),
+         market_bull ? "Nifty above EMA50>200" :
+         market_bear ? "Nifty below EMA200"    : "Nifty EMA50<200",
          text_color=color.new(color.gray, 30), text_size=size.tiny)
 
     table.cell(dash, 0, 4, "Mesh duration",
@@ -467,13 +505,14 @@ if barstate.islast
     table.cell(dash, 0, 11, "Signal score",
          text_color=color.new(color.gray, 20), text_size=size.small)
     table.cell(dash, 1, 11,
-         str.tostring(in_short ? signal_score_s : signal_score) + " / 7",
-         text_color = (in_short ? signal_score_s : signal_score) >= 6 ? color.lime :
-                      (in_short ? signal_score_s : signal_score) >= 4 ? color.orange : color.red,
+         str.tostring(in_short ? signal_score_s : signal_score) +
+         (in_short ? " / 6" : " / 7"),
+         text_color = (in_short ? signal_score_s : signal_score) >= 5 ? color.lime :
+                      (in_short ? signal_score_s : signal_score) >= 3 ? color.orange : color.red,
          text_size=size.small, text_halign=text.align_center)
     table.cell(dash, 2, 11,
-         (in_short ? signal_score_s : signal_score) >= 6 ? "High conviction" :
-         (in_short ? signal_score_s : signal_score) >= 4 ? "Moderate"        : "Low",
+         (in_short ? signal_score_s >= 5 : signal_score >= 6) ? "High conviction" :
+         (in_short ? signal_score_s >= 3 : signal_score >= 4) ? "Moderate"        : "Low",
          text_color=color.new(color.gray, 30), text_size=size.tiny)
 
     table.cell(dash, 0, 12, "ATR",
@@ -507,21 +546,23 @@ if barstate.islast
     table.cell(dash, 0, 15, "Entry price",
          text_color=color.new(color.gray, 20), text_size=size.small)
     table.cell(dash, 1, 15,
-         not na(entry_price) ? str.tostring(math.round(entry_price, 2)) : "–",
+         (in_long or in_short) and not na(entry_price) ?
+             str.tostring(math.round(entry_price, 2)) : "–",
          text_color = in_long  ? color.lime :
                       in_short ? color.red  : color.gray,
          text_size=size.small, text_halign=text.align_center)
     table.cell(dash, 2, 15,
-         not na(entry_price) and in_long  ?
+         in_long  and not na(entry_price) ?
              "SL " + str.tostring(math.round(entry_price - atr * sl_mult, 2)) :
-         not na(entry_price) and in_short ?
+         in_short and not na(entry_price) ?
              "SL " + str.tostring(math.round(entry_price + atr * sl_mult, 2)) : "–",
          text_color=color.new(color.red, 10), text_size=size.tiny)
 
     table.cell(dash, 0, 16, "Trail active",
          text_color=color.new(color.gray, 20), text_size=size.small)
     table.cell(dash, 1, 16,
-         trail_active_l or trail_active_s ? "YES" : "NO",
+         (in_long or in_short) ?
+             (trail_active_l or trail_active_s ? "YES" : "NO") : "–",
          text_color = trail_active_l or trail_active_s ? color.lime : color.gray,
          text_size=size.small, text_halign=text.align_center)
     table.cell(dash, 2, 16,

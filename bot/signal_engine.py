@@ -159,6 +159,7 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
                                e21, e50, e200, wbull, green, df, p,
                                short=True))
 
+
     return signals
 
 

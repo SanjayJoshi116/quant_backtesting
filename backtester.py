@@ -60,8 +60,8 @@ def run_backtest(df: pd.DataFrame,
     room_atr    = float(p["min_room_atr"])
 
     # ── Position sizing constants (not varied by optimisation grid) ───────────
-    _risk_frac = cfg.risk_per_trade_pct / 100.0   # e.g. 0.02 for 2 %
-    _max_pos   = cfg.max_position_pct   / 100.0   # e.g. 0.20 for 20 %
+    _risk_frac = cfg.risk_per_trade_pct / 100.0   # e.g. 0.015 for 1.5%
+    _max_pos   = cfg.max_position_pct   / 100.0   # e.g. 0.20 for 20%
     _rtc       = _round_trip_cost()               # round-trip cost fraction
 
     # ── Numpy arrays for speed ────────────────────────────────────────────────
@@ -90,6 +90,7 @@ def run_backtest(df: pd.DataFrame,
     ll12_a    = df["lowest_low_12"].values.astype(np.float64)
     base_bo_a = df["base_breakout"].values.astype(bool) \
                 if "base_breakout" in df.columns else np.zeros(n, dtype=bool)
+
     ll50_a   = df["lowest_low_50"].values.astype(np.float64)
 
     # ── Position state ────────────────────────────────────────────────────────
@@ -225,6 +226,9 @@ def run_backtest(df: pd.DataFrame,
                     bocs_a[i] and adx_ok_s and vol_ok_s and
                     di_dom and room_ok):
                 new_sig, is_short = "BO-S", True
+
+
+
 
             # Regime gate: block new long entries when Nifty is below EMA200
             if is_long and market_regime is not None:
