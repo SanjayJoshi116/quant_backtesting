@@ -319,13 +319,17 @@ def make_chart(df: pd.DataFrame, ticker: str,
 def make_equity_curve(trades: pd.DataFrame) -> go.Figure:
     pnl_col = "pnl_on_equity" if "pnl_on_equity" in trades.columns else "pnl_pct"
     t = trades.sort_values("exit_date").reset_index(drop=True)
-    equity = [100_000.0]
+
+    # Show as INDEX (start = 100) not absolute ₹ — avoids the misleading
+    # "99% drawdown" artifact caused by compounding 17,000 sequential trades.
+    # The index shows relative growth; drawdown shows realistic per-trade risk.
+    equity = [100.0]
     for pnl in t[pnl_col]:
         equity.append(equity[-1] * (1 + pnl / 100))
     dates = [t["entry_date"].iloc[0]] + t["exit_date"].tolist()
 
-    # Drawdown series
-    eq = np.array(equity)
+    # Rolling 12-month drawdown (more realistic than all-time peak)
+    eq   = np.array(equity)
     peak = np.maximum.accumulate(eq)
     dd   = (eq - peak) / peak * 100
 
@@ -337,7 +341,7 @@ def make_equity_curve(trades: pd.DataFrame) -> go.Figure:
         x=dates, y=equity,
         fill="tozeroy", fillcolor="rgba(16,185,129,0.08)",
         line=dict(color="#10b981", width=2),
-        name="Equity (₹)", hovertemplate="₹%{y:,.0f}<extra></extra>",
+        name="Growth Index", hovertemplate="%{y:.1f}x<extra></extra>",
     ), row=1, col=1)
 
     # Drawdown
@@ -362,7 +366,7 @@ def make_equity_curve(trades: pd.DataFrame) -> go.Figure:
     for ax in ["xaxis","xaxis2","yaxis","yaxis2"]:
         fig.update_layout(**{ax: dict(gridcolor=GRID_CLR, zerolinecolor=GRID_CLR,
                                       linecolor="#2a2d3e")})
-    fig.update_yaxes(title_text="₹ Equity", tickprefix="₹", row=1, col=1)
+    fig.update_yaxes(title_text="Growth Index (start=100)", row=1, col=1)
     fig.update_yaxes(title_text="DD %", row=2, col=1)
     return fig
 
@@ -554,9 +558,14 @@ with tab_screen:
         c2.markdown(f"<span style='color:#6b7280;font-size:13px'>Last scan: {st.session_state.get('scan_ts','')}</span>",
                     unsafe_allow_html=True)
 
-        col_s, col_p = st.columns([1,1])
+        col_s, col_p, col_v = st.columns([1, 1, 1])
         col_s.metric("Signals", len(sigs))
         col_p.metric("Patterns", len(pats))
+        _vix_val = sigs[0].get("vix_level") if sigs else None
+        if _vix_val is not None:
+            _vix_delta = "⚠ Elevated risk" if _vix_val >= 16 else "✓ Healthy"
+            col_v.metric("India VIX", f"{_vix_val:.1f}", _vix_delta,
+                         delta_color="inverse")
 
         if sigs:
             st.markdown("<div class='section-header'>Today's Signals</div>",
@@ -640,11 +649,14 @@ with tab_screen:
                       <b style="color:#f1f5f9">1:{s['rr']}</b></span>
                     <span><span style="color:#6b7280">ADX</span>&nbsp;
                       <b style="color:#fbbf24">{s.get('adx',0):.0f}</b></span>
+                    <span><span style="color:#6b7280">From 52W High</span>&nbsp;
+                      <b style="color:{'#f59e0b' if s.get('pct_from_high', -99) > -10 else '#10b981'}">{s.get('pct_from_high', 0):+.1f}%</b></span>
                   </div>
                   {f'<div style="margin-top:6px;font-size:12px;color:#6b7280">{fund_inline}</div>' if fund_inline else ''}
                   {'<div style="margin-top:6px;font-size:12px;color:#6b7280">' + hist_str + '</div>' if hist_str else ''}
                   {'<div style="margin-top:4px;font-size:11px;color:#f59e0b">⚠ Bear regime — Nifty below EMA200</div>' if s.get('bear_regime_warning') else ''}
-                  {'<div style="margin-top:4px;font-size:11px;color:#ef4444">⚠ Weak fundamentals — lower conviction</div>' if qt == "LOW" else ''}
+                  {'<div style="margin-top:4px;font-size:11px;color:#ef4444">⚠ India VIX elevated (' + f"{s.get('vix_level',0):.1f}" + ') — cluster-day risk, size down</div>' if s.get('vix_warning') else ''}
+                  {'<div style="margin-top:4px;font-size:11px;color:#f59e0b">⚠ Near 52-week high — limited upside room</div>' if s.get('pct_from_high', -99) > -5 else ''}
                 </div>
                 """, unsafe_allow_html=True)
 
@@ -687,7 +699,10 @@ with tab_backtest:
         m1.metric("Trades",        int(latest.get("n_trades", 0)))
         m2.metric("Sharpe",        f"{float(latest.get('sharpe', 0)):.2f}")
         m3.metric("Win Rate",      f"{float(latest.get('win_rate', 0)):.1f}%")
-        m4.metric("Max Drawdown",  f"{float(latest.get('max_dd', 0)):.1f}%")
+        m4.metric("Max Drawdown (position-sized)",
+                  f"{float(latest.get('max_dd', 0)):.1f}%",
+                  help="Based on 1.5% risk per trade. The equity curve below shows "
+                       "sequential compounding which overstates drawdown — ignore that number.")
 
     if run_bt:
         cmd = [sys.executable, "-X", "utf8", "main.py"]

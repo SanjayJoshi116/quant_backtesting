@@ -20,6 +20,20 @@ from core.pattern_scanner import scan_patterns
 from core.fundamental_scorer import get_cached_quality
 
 _NIFTY = "^NSEI"
+_VIX   = "^INDIAVIX"
+
+VIX_WARN = 16.0   # above this, flag signals as elevated cluster-risk
+
+
+def _get_vix() -> float | None:
+    """Return latest India VIX close, or None on failure."""
+    try:
+        df = fetch_or_load(_VIX)
+        if df is None or df.empty:
+            return None
+        return float(df["Close"].iloc[-1])
+    except Exception:
+        return None
 
 
 def _market_regime() -> bool:
@@ -64,9 +78,14 @@ def run_scan(watchlist: list[str] = None,
 
     # Market regime check
     bull_regime = _market_regime()
+    vix_level   = _get_vix()
+    vix_warning = vix_level is not None and vix_level >= VIX_WARN
     if verbose:
         status = "BULL ✓" if bull_regime else "BEAR ⚠ — long signals flagged"
         print(f"  Market regime (Nifty vs EMA200): {status}")
+        if vix_level is not None:
+            vix_flag = " ⚠ ELEVATED — cluster-day risk" if vix_warning else " ✓ healthy"
+            print(f"  India VIX: {vix_level:.1f}{vix_flag}")
 
     alerts:   list[dict] = []
     patterns: list[dict] = []
@@ -111,6 +130,8 @@ def run_scan(watchlist: list[str] = None,
             sig["bear_regime_warning"] = (
                 not bull_regime and sig["direction"] == "LONG"
             )
+            sig["vix_level"]   = vix_level
+            sig["vix_warning"] = vix_warning
             hist = get_signal_stats(ticker, sig["signal_type"])
             sig["hist"]      = hist
             sig["signal_id"] = log_signal(sig)

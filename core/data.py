@@ -168,7 +168,7 @@ def fetch_or_load(ticker: str, force: bool = False) -> pd.DataFrame | None:
             ticker,
             period=cfg.data_period,
             interval="1d",
-            auto_adjust=True,
+            auto_adjust=False,
             progress=False,
             actions=False,
         )

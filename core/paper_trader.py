@@ -151,6 +151,22 @@ def update_open_positions() -> dict:
             if ohlc is None or ohlc.empty:
                 continue
 
+            # ── Price sanity check: catch yfinance bad/adjusted data ─────────
+            # If the price on signal date doesn't match stored entry by >30%,
+            # the cache has corrupt/adjusted data — don't trust SL/TP checks.
+            bar_on_date = ohlc[ohlc.index.normalize() == signal_date.normalize()]
+            if not bar_on_date.empty:
+                actual_close = float(bar_on_date["Close"].iloc[-1])
+                if actual_close > 0:
+                    ratio = entry_price / actual_close
+                    if ratio < 0.7 or ratio > 1.3:
+                        df.at[idx, "status"]      = "DATA_ERROR"
+                        df.at[idx, "exit_reason"] = f"PRICE_MISMATCH_{ratio:.2f}x"
+                        df.at[idx, "exit_date"]   = today.strftime("%Y-%m-%d")
+                        df.at[idx, "days_held"]   = days_elapsed
+                        counts["expired"] += 1   # count in expired bucket so it closes
+                        continue
+
             # Bars strictly AFTER the signal date
             bars = ohlc[ohlc.index > signal_date].copy()
             if bars.empty:
