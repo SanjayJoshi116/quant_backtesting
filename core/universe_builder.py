@@ -7,11 +7,9 @@ filters for quality, and updates data.py TICKERS list.
 Run:  python core/universe_builder.py
 """
 
-import os
 import sys
 import warnings
 import pandas as pd
-import numpy as np
 import yfinance as yf
 from pathlib import Path
 from tqdm import tqdm
@@ -91,7 +89,7 @@ def download_and_filter(symbols: list[str],
                 actions      = False,
                 group_by     = "ticker",
             )
-        except Exception as e:
+        except Exception:
             failed.extend(batch)
             continue
 
@@ -135,8 +133,7 @@ def download_and_filter(symbols: list[str],
                     continue
 
                 # Quality gate 4: price must be positive
-                df.ffill(inplace=True)
-                df.dropna(inplace=True)
+                df = df.ffill().dropna()
                 df = df[df["Close"] > 0]
                 df.index = pd.to_datetime(df.index).tz_localize(None)
                 df.index.name = "Date"
@@ -215,8 +212,8 @@ if __name__ == "__main__":
     symbols   = get_candidate_symbols()
     passed    = download_and_filter(symbols)
 
-    print(f"\n  Expanding backtesting universe:")
-    print(f"  Before: 86 stocks")
+    print("\n  Expanding backtesting universe:")
+    print("  Before: 86 stocks")
     print(f"  After : {len(passed)} stocks ({len(passed)/86:.1f}× larger)")
 
     update_data_py(passed)

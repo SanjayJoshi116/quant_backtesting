@@ -100,7 +100,7 @@ def run_grid_search(ind_dfs: dict,
     results.sort(key=lambda x: x["is_sharpe"], reverse=True)
 
     if verbose:
-        print(f"\n  Top-5 parameter sets (IS Sharpe):")
+        print("\n  Top-5 parameter sets (IS Sharpe):")
         for k, r in enumerate(results[:5], 1):
             p = r["params"]
             print(

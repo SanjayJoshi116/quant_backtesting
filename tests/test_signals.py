@@ -4,8 +4,6 @@ Tests for bot/signal_engine.py — detect() behaviour and output contract.
 
 import math
 import pytest
-import pandas as pd
-import numpy as np
 
 from bot.signal_engine import detect, _build, SIGNAL_META
 

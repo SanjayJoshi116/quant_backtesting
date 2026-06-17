@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import threading
 import warnings
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -29,6 +30,7 @@ _LOGS   = _BASE / "logs"
 _FLOG   = _LOGS / "fetch_log.csv"
 
 _LOG_COLS = ["timestamp", "ticker", "source", "rows", "cache_hit", "data_hash"]
+_log_lock = threading.Lock()
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -100,19 +102,20 @@ def _hash(df: pd.DataFrame) -> str:
 def _log(ticker: str, source: str, rows: int,
          cache_hit: bool, data_hash: str) -> None:
     _ensure_dirs()
-    new_file = not _FLOG.exists()
-    with open(_FLOG, "a", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=_LOG_COLS)
-        if new_file:
-            w.writeheader()
-        w.writerow({
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-            "ticker":    ticker,
-            "source":    source,
-            "rows":      rows,
-            "cache_hit": cache_hit,
-            "data_hash": data_hash,
-        })
+    with _log_lock:
+        new_file = not _FLOG.exists()
+        with open(_FLOG, "a", newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=_LOG_COLS)
+            if new_file:
+                w.writeheader()
+            w.writerow({
+                "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                "ticker":    ticker,
+                "source":    source,
+                "rows":      rows,
+                "cache_hit": cache_hit,
+                "data_hash": data_hash,
+            })
 
 
 def _clean(raw: pd.DataFrame, min_bars: int) -> pd.DataFrame | None:
@@ -125,8 +128,7 @@ def _clean(raw: pd.DataFrame, min_bars: int) -> pd.DataFrame | None:
     if not all(c in raw.columns for c in needed):
         return None
     df = raw[needed].copy()
-    df.ffill(inplace=True)
-    df.dropna(inplace=True)
+    df = df.ffill().dropna()
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "Date"
     df = df[~df.index.duplicated(keep="last")]   # drop duplicate dates

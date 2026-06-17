@@ -432,8 +432,7 @@ def download_ticker(ticker: str,
         return None
 
     # Forward-fill minor gaps, then drop any remaining NaN rows
-    df.ffill(inplace=True)
-    df.dropna(inplace=True)
+    df = df.ffill().dropna()
 
     # Ensure index is DatetimeIndex (timezone-naive)
     df.index = pd.to_datetime(df.index).tz_localize(None)

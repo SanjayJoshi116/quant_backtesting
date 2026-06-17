@@ -63,7 +63,7 @@ def compute_metrics(trades_df: pd.DataFrame) -> dict:
         return empty
 
     wins   = pnl[pnl > 0]
-    losses = pnl[pnl <= 0]
+    losses = pnl[pnl < 0]
 
     win_rate       = len(wins) / n
     avg_win        = float(wins.mean())   if len(wins)   > 0 else 0.0
@@ -154,13 +154,13 @@ def breakdown_by_signal(trades_df: pd.DataFrame) -> dict:
         sub = trades_df[trades_df["signal_type"] == sig]
         if sub.empty:
             continue
-        w = sub[sub["pnl_pct"] > 0]["pnl_pct"].sum()
-        l = abs(sub[sub["pnl_pct"] <= 0]["pnl_pct"].sum())
+        w          = sub[sub["pnl_pct"] > 0]["pnl_pct"].sum()
+        gross_loss = abs(sub[sub["pnl_pct"] < 0]["pnl_pct"].sum())
         out[sig] = dict(
             count=len(sub),
             win_rate=(sub["pnl_pct"] > 0).mean() * 100,
             avg_pnl=sub["pnl_pct"].mean(),
-            profit_factor=w / l if l > 0 else np.inf,
+            profit_factor=w / gross_loss if gross_loss > 0 else np.inf,
         )
     return out
 

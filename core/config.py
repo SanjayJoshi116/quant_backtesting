@@ -69,6 +69,9 @@ class StrategyConfig(BaseModel):
     commission_pct: float = Field(ge=0, default=0.0005)
     slippage_pct:   float = Field(ge=0, default=0.0005)
 
+    # ── Versioning ────────────────────────────────────────────────────────────
+    config_version: str = "unknown"
+
     @model_validator(mode="after")
     def _check_rsi_ranges(self) -> "StrategyConfig":
         pairs = [
@@ -131,6 +134,10 @@ def load_config(path: Path | None = None) -> StrategyConfig:
     flat: dict = {}
     for section in ("exit", "filters", "entry", "data", "regime", "sizing", "costs"):
         flat.update(raw.get(section, {}))
+
+    # Top-level keys (not nested under any section)
+    if "config_version" in raw:
+        flat["config_version"] = raw["config_version"]
 
     # Rename 'period' → 'data_period' (avoid shadowing builtins)
     if "period" in flat:

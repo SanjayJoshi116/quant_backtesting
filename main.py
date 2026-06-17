@@ -13,10 +13,7 @@ import warnings
 import traceback
 
 import pandas as pd
-import numpy as np
 from tqdm import tqdm
-
-warnings.filterwarnings("ignore")
 
 # ── Import project modules ────────────────────────────────────────────────────
 from data         import download_all_data, TICKERS, NIFTY_TICKER
@@ -25,8 +22,7 @@ from backtester   import run_backtest
 from core.config  import load_config
 from core.logging import log_backtest_run
 from analysis     import (compute_metrics, compute_equity_curve,
-                          compute_portfolio_equity, compute_monthly_returns,
-                          breakdown_by_exit, breakdown_by_signal,
+                          compute_portfolio_equity, breakdown_by_exit, breakdown_by_signal,
                           breakdown_by_year, breakdown_by_regime,
                           adjusted_z_test, build_trade_return_matrix,
                           nifty_rolling_corr, print_metrics)
@@ -38,6 +34,8 @@ from charts       import (plot_equity_curves, plot_drawdown,
                           plot_mc_fan, plot_sensitivity,
                           plot_correlation_heatmap, plot_nifty_corr,
                           plot_per_stock_summary)
+
+warnings.filterwarnings("ignore")
 
 BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(BASE_DIR, "results")
@@ -308,8 +306,8 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
         f"\n## Universe\n{', '.join(t.replace('.NS','') for t in available)}",
         "\n## Combined Portfolio (all stocks, default params, 2019–2026)",
         "",
-        f"| Metric            | Value           |",
-        f"|-------------------|-----------------|",
+        "| Metric            | Value           |",
+        "|-------------------|-----------------|",
         f"| Total Trades      | {cm['n_trades']} |",
         f"| Win Rate          | {cm['win_rate']:.1f}% |",
         f"| Avg Win           | {cm['avg_win']:+.2f}% |",
@@ -321,7 +319,7 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
         f"| Sortino (ann.)    | {cm['sortino']:.2f} |",
         f"| Max Drawdown      | {cm['max_dd']:.1f}% |",
         f"| Expectancy t-stat | {cm['z_stat']:.2f} (p={cm['p_value']:.4f}) |",
-        f"| *(H0: mean return = 0, one-tailed. p < 0.05 = statistically significant edge)* | |",
+        "| *(H0: mean return = 0, one-tailed. p < 0.05 = statistically significant edge)* | |",
         "",
         f"**Inter-stock avg ρ** : {adj_z.get('avg_rho', 0):.3f}  "
         f"| **Adj. Z** : {adj_z.get('z_adj', 0):.2f}  "
@@ -368,7 +366,6 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
     pf  = cm["profit_factor"]
     exp = cm["expectancy"]
     sig_expectancy = cm["p_value"] < 0.05          # t-test on pnl_on_equity > 0
-    sig_adj        = adj_z.get("p_adj", 1) < 0.05  # adjusted for inter-stock corr
 
     if sh > 0.5 and pf > 1.3 and exp > 0 and sig_expectancy:
         verdict = "✅ PROMISING — strategy shows statistically significant positive edge. Recommend paper-trading before going live."

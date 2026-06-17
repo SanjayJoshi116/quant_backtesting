@@ -25,7 +25,8 @@ def make_ohlcv(n: int = 420, seed: int = 42,
     noise  = rng.uniform(0.002, 0.018, n)
     high   = close * (1.0 + noise)
     low    = close * (1.0 - noise)
-    open_  = np.roll(close, 1); open_[0] = close[0]
+    open_  = np.roll(close, 1)
+    open_[0] = close[0]
     volume = rng.integers(500_000, 5_000_000, n).astype(float)
     dates  = pd.date_range("2018-01-02", periods=n, freq="B")
     return pd.DataFrame(

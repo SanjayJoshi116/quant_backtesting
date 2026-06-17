@@ -6,7 +6,6 @@ with replacement. Reports distribution of outcomes.
 """
 
 import numpy as np
-import pandas as pd
 
 
 def run_monte_carlo(trade_pnls,

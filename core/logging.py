@@ -93,8 +93,7 @@ def log_backtest_run(
         {
             "run_id":         run_id,
             "timestamp":      _now(),
-            "config_version": getattr(cfg, "config_version", "unknown")
-                              if hasattr(cfg, "config_version") else "1.0",
+            "config_version": cfg.config_version,
             "params_hash":    _params_hash(cfg),
             "start_date":     start_date,
             "end_date":       end_date,
@@ -143,7 +142,7 @@ def log_signal(
             "tp":             sig.get("tp", ""),
             "rr":             sig.get("rr", ""),
             "score":          sig.get("score", ""),
-            "config_version": "1.0",
+            "config_version": cfg.config_version,
             "params_hash":    _params_hash(cfg),
             "status":         status,
         },

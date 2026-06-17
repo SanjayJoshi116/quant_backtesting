@@ -5,10 +5,9 @@ Tests for core/data.py — cache hit/miss, fetch logging, staleness.
 import csv
 import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pandas as pd
-import pytest
 
 from core.data import fetch_or_load, _is_fresh, _csv_path, _clean, _hash
 
