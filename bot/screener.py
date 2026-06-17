@@ -7,7 +7,6 @@ No direct yfinance calls here.
 
 import sys
 import os
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -37,9 +36,9 @@ def _get_vix() -> float | None:
         return None
 
 
-def _prefetch_parallel(tickers: list[str], verbose: bool = True,
-                       progress_callback=None) -> None:
-    """Warm the disk cache for all stale tickers sequentially (yfinance not thread-safe)."""
+def _prefetch_cache(tickers: list[str], verbose: bool = True,
+                    progress_callback=None) -> None:
+    """Download and cache any stale tickers before the scan loop runs."""
     cfg = load_config()
     stale = [t for t in tickers if not _is_fresh(_csv_path(t), cfg.cache_ttl_hours)]
     if not stale:
@@ -47,20 +46,13 @@ def _prefetch_parallel(tickers: list[str], verbose: bool = True,
     total = len(stale)
     if verbose:
         print(f"  Caching {total} tickers...")
-
-    done = [0]
-
-    def _fetch_one(t: str):
+    for i, t in enumerate(stale, 1):
         fetch_or_load(t)
-        done[0] += 1
         if progress_callback:
             try:
-                progress_callback(done[0], total, f"__cache__{t}")
+                progress_callback(i, total, f"__cache__{t}")
             except Exception:
                 pass
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        list(pool.map(_fetch_one, stale))
 
 
 def _market_regime() -> bool:
@@ -104,7 +96,7 @@ def run_scan(watchlist: list[str] = None,
         watchlist = WATCHLIST
 
     # Warm cache before scanning (sequential — yfinance not thread-safe)
-    _prefetch_parallel(watchlist, verbose=verbose, progress_callback=progress_callback)
+    _prefetch_cache(watchlist, verbose=verbose, progress_callback=progress_callback)
 
     # Market regime check
     bull_regime = _market_regime()
