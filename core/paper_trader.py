@@ -16,11 +16,9 @@ Rules (user-defined):
 
 from __future__ import annotations
 
-import csv
-from datetime import date, datetime, timedelta
+from datetime import date
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 PAPER_LOG = Path("logs/paper_trades.csv")
@@ -184,6 +182,8 @@ def update_open_positions() -> dict:
             # ── Replay bars in order — first SL or TP hit wins ───────────────
             hit = None
             for bar_ts, bar in bars.iterrows():
+                if pd.isna(bar["Low"]) or pd.isna(bar["High"]):
+                    continue
                 if bar["Low"] <= sl:
                     hit = ("SL_HIT", "SL", sl, bar_ts)
                     break

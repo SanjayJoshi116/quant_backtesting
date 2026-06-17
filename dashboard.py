@@ -3,7 +3,11 @@ dashboard.py — NSE Swing Trading Dashboard (v2)
 Run:  streamlit run dashboard.py
 """
 
-import sys, os, glob, warnings, subprocess
+import sys
+import os
+import glob
+import warnings
+import subprocess
 from pathlib import Path
 from datetime import datetime
 
@@ -598,10 +602,14 @@ with tab_screen:
                 qrg  = s.get("qual_rev_growth")
                 qroa = s.get("qual_roa_cur")
                 qcfo = s.get("qual_cfo_gt_ni")
-                if qroe is not None: fund_parts.append(f"ROE {qroe*100:.1f}%")
-                if qrg  is not None: fund_parts.append(f"Rev {'▲' if qrg>0 else '▼'} {abs(qrg)*100:.1f}%")
-                if qcfo is True:     fund_parts.append("CFO>NI ✓")
-                elif qcfo is False:  fund_parts.append("CFO<NI ⚠")
+                if qroe is not None:
+                    fund_parts.append(f"ROE {qroe*100:.1f}%")
+                if qrg  is not None:
+                    fund_parts.append(f"Rev {'▲' if qrg>0 else '▼'} {abs(qrg)*100:.1f}%")
+                if qcfo is True:
+                    fund_parts.append("CFO>NI ✓")
+                elif qcfo is False:
+                    fund_parts.append("CFO<NI ⚠")
                 fund_inline = "  ·  ".join(fund_parts) if fund_parts else (
                     "No fundamental data — run Prefetch" if qt == "UNKNOWN" else ""
                 )
@@ -706,8 +714,10 @@ with tab_backtest:
 
     if run_bt:
         cmd = [sys.executable, "-X", "utf8", "main.py"]
-        if skip_optim: cmd.append("--skip-optim")
-        if force_dl:   cmd.append("--force-download")
+        if skip_optim:
+            cmd.append("--skip-optim")
+        if force_dl:
+            cmd.append("--force-download")
         output_box = st.empty()
         lines = []
         with subprocess.Popen(
@@ -720,7 +730,8 @@ with tab_backtest:
                 lines.append(line.rstrip())
                 if any(k in line for k in ["STAGE","trades","WR=","Sharpe","PORTFOLIO"]):
                     output_box.code("\n".join(lines[-12:]), language=None)
-        get_all_trades.clear(); get_runs.clear()
+        get_all_trades.clear()
+        get_runs.clear()
         st.success("✅ Backtest complete! Refresh page to see updated results.")
 
     # Equity curve
@@ -768,25 +779,28 @@ with tab_patterns:
     if scan_p:
         from data import TICKERS, RAW_DIR, _safe_name
         from core.pattern_scanner import scan_patterns
-        from indicators import prepare_indicators
         all_p = []
         bar = st.progress(0, text="Scanning patterns...")
         for idx, ticker in enumerate(TICKERS):
             bar.progress((idx+1)/len(TICKERS), text=f"{ticker.replace('.NS','')}...")
             csv = os.path.join(RAW_DIR, f"{_safe_name(ticker)}.csv")
-            if not os.path.exists(csv): continue
+            if not os.path.exists(csv):
+                continue
             try:
                 raw = pd.read_csv(csv, index_col=0, parse_dates=True)
                 raw.index = pd.to_datetime(raw.index).tz_localize(None)
                 from indicators import prepare_indicators as pi
                 ind = pi(raw)
                 for p in scan_patterns(ind):
-                    if conf_f == "HIGH" and p["confidence"] != "HIGH": continue
+                    if conf_f == "HIGH" and p["confidence"] != "HIGH":
+                        continue
                     p["ticker"] = ticker
                     p["_q"] = (3 if p.get("breaking_out") else 1) + \
                                (2 if p["confidence"]=="HIGH" else 0)
                     all_p.append(p)
-            except Exception: pass
+            except Exception as _e:
+                import warnings
+                warnings.warn(f"Pattern scan failed for {ticker}: {_e}")
         all_p.sort(key=lambda x: -x.pop("_q",0))
         st.session_state["all_patterns"] = all_p
         bar.empty()
@@ -1235,8 +1249,7 @@ with tab_fundamentals:
     # ── Cache stats + controls ────────────────────────────────────────────────
     try:
         from core.fundamental_scorer import (
-            cache_stats, get_quality, get_quality_bulk,
-            get_cached_quality, list_cached, FUND_DIR
+            cache_stats, get_quality
         )
         stats_f = cache_stats()
     except Exception as e:
@@ -1360,7 +1373,7 @@ with tab_fundamentals:
                     "P/B":           _r2("qual_pb"),
                 })
             return pd.DataFrame(rows)
-        except Exception as e:
+        except Exception:
             return pd.DataFrame()
 
     qual_df = _load_all_quality()
@@ -1525,8 +1538,11 @@ with tab_config:
                 yaml_path.write_text(new_yaml, encoding="utf-8")
                 try:
                     for m in list(sys.modules):
-                        if "core" in m: del sys.modules[m]
-                except Exception: pass
+                        if "core" in m:
+                            del sys.modules[m]
+                except Exception as _e:
+                    import warnings
+                    warnings.warn(f"Module reload failed: {_e}")
                 st.success("Saved! Re-run backtest to validate.")
             if bc2.button("↩ Discard"):
                 st.rerun()

@@ -41,7 +41,7 @@ def compute_weekly_ema50(df: pd.DataFrame) -> pd.Series:
     w_ema50_lag = w_ema50.shift(1)
 
     # Reindex to daily frequency, forward-fill (last known weekly value)
-    daily = w_ema50_lag.reindex(df.index, method="ffill")
+    daily = w_ema50_lag.reindex(df.index).ffill()
     daily.name = "weekly_ema50"
     return daily
 

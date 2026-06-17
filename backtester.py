@@ -114,6 +114,26 @@ def run_backtest(df: pd.DataFrame,
                 np.isnan(adx_a[i]) or np.isnan(at) or
                 np.isnan(vsma_a[i]) or np.isnan(hh12_a[i]) or
                 np.isnan(ll50_a[i])):
+            if in_pos and not np.isnan(c) and entry_px > 0:
+                raw_pnl = (c / entry_px - 1.0) if direction == "long" \
+                          else (entry_px / c - 1.0)
+                pnl_pct = (raw_pnl - _rtc) * 100.0
+                pnl_on_equity = (raw_pnl - _rtc) * position_pct * 100.0
+                entry_ts = pd.Timestamp(entry_date)
+                exit_ts  = pd.Timestamp(dates[i])
+                trades.append({
+                    "ticker": ticker, "direction": direction,
+                    "signal_type": sig_type,
+                    "entry_date": entry_ts, "exit_date": exit_ts,
+                    "entry_price": round(entry_px, 4), "exit_price": round(c, 4),
+                    "exit_reason": "DATA_GAP",
+                    "atr_at_entry": round(entry_atr, 4),
+                    "pnl_pct": round(pnl_pct, 4),
+                    "pnl_on_equity": round(pnl_on_equity, 4),
+                    "position_pct": round(position_pct * 100, 2),
+                    "bars_held": max((exit_ts - entry_ts).days, 1),
+                })
+                in_pos = False
             continue
 
         # ── EXIT ──────────────────────────────────────────────────────────────
@@ -139,7 +159,7 @@ def run_backtest(df: pd.DataFrame,
                 elif c <= tp_px:
                     exit_px, exit_reason = tp_px, "TP"
 
-            if exit_px is not None:
+            if exit_px is not None and entry_px > 0:
                 raw_pnl = (exit_px / entry_px - 1.0) if direction == "long" \
                           else (entry_px / exit_px - 1.0)
                 # pnl_pct: return on the position (signal quality metric)
@@ -177,7 +197,6 @@ def run_backtest(df: pd.DataFrame,
             v    = vol_a[i]
             vs   = vsma_a[i]
             e21  = ema21_a[i]
-            e50  = ema50_a[i]
 
             vol_ok_l = v >= vs * vol_ml
             vol_ok_s = v >= vs * vol_ms
@@ -236,8 +255,9 @@ def run_backtest(df: pd.DataFrame,
                     is_long = bool(market_regime.asof(pd.Timestamp(dates[i])))
                     if not is_long:
                         new_sig = ""
-                except Exception:
-                    pass
+                except Exception as _e:
+                    import warnings
+                    warnings.warn(f"Regime gate error: {_e}")
 
             if is_long:
                 in_pos      = True

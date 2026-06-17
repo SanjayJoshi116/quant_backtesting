@@ -10,7 +10,7 @@ A complete end-to-end swing trading system for NSE (National Stock Exchange of I
 | Layer | Tool | Purpose |
 |---|---|---|
 | Visual | TradingView Pine Script | See signals, EMA mesh, SL/TP lines live on any NSE chart |
-| Validation | Python backtester | Test the strategy on 10 years of daily data across 185 stocks |
+| Validation | Python backtester | Test the strategy on 10 years of daily data across 185+ stocks |
 | Automation | Python alert bot | Scan all stocks every morning, email signals with trade levels |
 
 The bot emails you every weekday at 11 AM with any stocks that fired a signal — entry price, stop loss, take profit, conviction score. You open the chart, confirm with your own TA, and place the trade manually.
@@ -49,6 +49,9 @@ The strategy is a **trend-following swing system** based on three entry types, a
 ### Conviction score (0–6)
 Each of these adds 1 point: bull trend active · ADX confirmed · volume confirmed · RSI in zone · bullish candle · price above weekly EMA 50.
 
+### Fundamental score (0–10)
+Piotroski-inspired quality gate: ROE/ROA levels + trend checks (debt falling, margins stable, no dilution). Tiers: HIGH (7–10) / MEDIUM (4–6) / LOW (0–3). Scores are cached for 90 days.
+
 ---
 
 ## Backtest results (2019–2026, 185 NSE stocks, daily bars)
@@ -74,27 +77,66 @@ Each of these adds 1 point: bull trend active · ADX confirmed · volume confirm
 ## Project structure
 
 ```
-├── pine_script.pine          # TradingView strategy (3H timeframe)
-├── data.py                   # Download historical data from Yahoo Finance
-├── indicators.py             # EMA, RSI, ADX, ATR, Volume, Weekly EMA computation
+quant_backtesting/
+│
+├── config/
+│   └── strategy.yaml         # Single source of truth for all strategy parameters
+│
+├── core/                     # Shared library used by backtester + bot
+│   ├── config.py             # Pydantic StrategyConfig — loads strategy.yaml
+│   ├── data.py               # Cache abstraction over yfinance
+│   ├── logging.py            # Append-only audit CSV logs (runs, signals, fetches)
+│   ├── scorecard.py          # Per-stock historical performance lookup
+│   ├── fundamental_scorer.py # Piotroski-style 10-pt fundamental quality score
+│   ├── patterns.py           # Pivot/S&R/flat-base detection (strictly causal)
+│   ├── pattern_scanner.py    # 11+ chart pattern recogniser (Bull Flag, Cup & Handle, etc.)
+│   ├── paper_trader.py       # Paper trading simulation
+│   ├── universe_builder.py   # Dynamic stock universe construction
+│   └── ml/
+│       ├── feature_builder.py  # ML feature engineering
+│       └── xgb_scorer.py       # XGBoost quality scorer
+│
+├── bot/                      # Live alert system
+│   ├── main.py               # Entry point — run scan + send email
+│   ├── config.py             # Gmail credentials loader (.env)
+│   ├── universe.py           # Stock watchlist (2,258 NSE stocks from CSV)
+│   ├── screener.py           # Fetch data → detect signals across all stocks
+│   ├── signal_engine.py      # Signal detection on today's completed bar
+│   └── notifier.py           # HTML email builder & SMTP sender
+│
+├── tests/                    # Pytest test suite
+│   ├── conftest.py
+│   ├── test_config.py
+│   ├── test_data.py
+│   ├── test_logging.py
+│   └── test_signals.py
+│
+├── results/                  # Backtest output (auto-created)
+│   ├── summary_report.md     # Full metrics after a backtest run
+│   ├── trades_*.csv          # Per-stock trade logs
+│   └── charts/               # 10+ PNG visualisations
+│
+├── logs/                     # Audit logs (auto-created)
+│   ├── backtest_runs.csv
+│   ├── signals.csv
+│   └── fetch_log.csv
+│
+├── main.py                   # Full backtest pipeline orchestrator
 ├── backtester.py             # Bar-by-bar backtest engine
-├── optimization.py           # Walk-forward + grid search optimiser
-├── analysis.py               # Statistics: Sharpe, Sortino, drawdown, Monte Carlo
-├── charts.py                 # Result visualisations
-├── main.py                   # Run the full backtest pipeline
+├── data.py                   # Yahoo Finance downloader + cache (185 NSE stocks)
+├── indicators.py             # EMA, RSI, ADX, ATR, Volume, candle patterns
+├── analysis.py               # Sharpe, Sortino, drawdown, Monte Carlo stats
+├── charts.py                 # Matplotlib/Seaborn chart generation
+├── optimization.py           # Walk-forward + grid search optimiser (108 combos)
+├── montecarlo.py             # Bootstrap Monte Carlo simulator (10k paths)
+├── dashboard.py              # Streamlit interactive dashboard
+├── pipeline.py               # Unified Typer CLI (backtest / screen / both / config)
+├── test_fundamental.py       # Fundamental scorer tests
 │
-├── bot/
-│   ├── universe.py           # Stock watchlist — edit this to add/remove stocks
-│   ├── config.py             # Strategy parameters (WFO best-fit)
-│   ├── signal_engine.py      # Detect signals on today's bar
-│   ├── screener.py           # Fetch data + scan all stocks
-│   ├── notifier.py           # Build and send HTML email alerts
-│   ├── main.py               # Run a scan immediately
-│   └── scheduler.py          # Auto-fire at 11 AM IST Mon–Fri
-│
-├── run_screener.bat          # Windows Task Scheduler launcher
-├── requirements.txt          # Backtest dependencies
-├── requirements_bot.txt      # Bot additional dependencies
+├── pine_script.pine          # TradingView strategy (3H timeframe)
+├── stocks_list.csv           # 2,258 NSE tickers for the screener universe
+├── start_dashboard.bat       # Windows launcher for Streamlit dashboard
+├── requirements.txt          # All Python dependencies
 └── .env.example              # Email credentials template (copy → .env, never commit)
 ```
 
@@ -105,7 +147,6 @@ Each of these adds 1 point: bull trend active · ADX confirmed · volume confirm
 ### 1. Install dependencies
 ```bash
 pip install -r requirements.txt
-pip install -r requirements_bot.txt
 ```
 
 ### 2. Configure email credentials
@@ -142,13 +183,22 @@ python bot/main.py --dry-run
 python bot/main.py --tickers WIPRO.NS PERSISTENT.NS --dry-run
 ```
 
-**Start daily scheduler (11 AM IST, Mon–Fri):**
+### 5. Run the Streamlit dashboard
 ```bash
-python bot/scheduler.py
+streamlit run dashboard.py
+# or on Windows: double-click start_dashboard.bat
 ```
+The dashboard shows live signals, historical scorecard, chart pattern scanner, and fundamental quality scores.
 
-**Auto-start on Windows login (Task Scheduler):**
-Add `run_screener.bat` as a Task Scheduler trigger at login/startup.
+### 6. Use the unified CLI
+```bash
+python pipeline.py --help
+
+python pipeline.py backtest    # run full backtest
+python pipeline.py screen      # run live screener
+python pipeline.py both        # backtest then screen
+python pipeline.py config      # show current strategy config
+```
 
 ---
 
@@ -162,6 +212,20 @@ Tickers must use Yahoo Finance format with `.NS` suffix.
 
 ---
 
+## Running tests
+
+```bash
+pytest tests/
+
+# Fundamental scorer specifically
+python test_fundamental.py
+
+# Linting (requires ruff in stock conda env)
+G:\Anaconda\envs\stock\Scripts\ruff.exe check .
+```
+
+---
+
 ## Important notes
 
 - **Timeframe mismatch:** The Pine Script is tuned for 3H bars; the backtester uses daily bars (yfinance only provides free intraday data for the last 60 days). Use the bot alert to identify *which* stock to look at, then open the 3H chart on TradingView to time the actual entry.
@@ -172,7 +236,7 @@ Tickers must use Yahoo Finance format with `.NS` suffix.
 
 ## Data source
 
-Historical data is fetched from **Yahoo Finance** via `yfinance` using `.NS` suffixed tickers (e.g. `WIPRO.NS`). No NSE subscription or scraping required.
+Historical data is fetched from **Yahoo Finance** via `yfinance` using `.NS` suffixed tickers (e.g. `WIPRO.NS`). No NSE subscription or scraping required. Daily OHLCV is cached to `data/raw/`; fundamental data is cached to `data/fundamentals/` for 90 days.
 
 ---
 

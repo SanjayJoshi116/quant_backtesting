@@ -121,7 +121,7 @@ def _regime_warning_row(sig: dict) -> str:
     """Warning row when signal fires in a bear market regime."""
     if not sig.get("bear_regime_warning"):
         return ""
-    return f"""
+    return """
       <tr>
         <td colspan="2" style="padding:6px 12px;background:#744210;border-radius:4px;
             color:#fbd38d;font-size:12px;text-align:center;margin:4px 16px;">
@@ -141,7 +141,7 @@ def _signal_card(sig: dict) -> str:
 
     neg_warn = ""
     if sig.get("negative_edge"):
-        neg_warn = f"""
+        neg_warn = """
         <tr>
           <td colspan="2" style="padding:6px 12px;background:#744210;border-radius:4px;
               color:#fbd38d;font-size:12px;text-align:center;">
@@ -333,15 +333,14 @@ def _sector_chart(signals: list[dict]) -> str:
 
     rows = []
     for sec in all_sectors:
-        l = long_counts[sec]
+        long_cnt = long_counts[sec]
         s = short_counts[sec]
-        total = l + s
+        total = long_cnt + s
         bar_pct = int(total / max_total * 100)
-        long_pct  = int(l / total * 100) if total else 0
-        short_pct = 100 - long_pct
+        long_pct  = int(long_cnt / total * 100) if total else 0
 
-        badge_long  = (f'<span style="color:{_GREEN};font-size:11px;">▲{l}L</span> '
-                       if l else "")
+        badge_long  = (f'<span style="color:{_GREEN};font-size:11px;">▲{long_cnt}L</span> '
+                       if long_cnt else "")
         badge_short = (f'<span style="color:{_RED};font-size:11px;">▼{s}S</span>'
                        if s else "")
 

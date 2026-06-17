@@ -120,14 +120,14 @@ def patterns(
     ),
 ) -> None:
     """Scan stocks for chart patterns forming — double bottom, bull flag, wedge, H&S, cup & handle."""
-    import sys, os
+    import sys
+    import os
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
     from data import TICKERS, RAW_DIR, _safe_name
     from bot.universe import WATCHLIST
     from indicators import prepare_indicators
     from core.pattern_scanner import scan_patterns
-    from core.data import fetch_or_load
     import pandas as pd
     from tqdm import tqdm
     from datetime import datetime
@@ -176,7 +176,7 @@ def patterns(
                            min(p.get("bars_forming", p.get("cup_bars",
                                p.get("pennant_bars", p.get("flag_bars", 5)))) / 20, 2)
                 all_patterns.append(p)
-        except Exception as e:
+        except Exception:
             failed.append(ticker)
 
     # Sort: HIGH first, then by pattern type

@@ -7,12 +7,13 @@ No direct yfinance calls here.
 
 import sys
 import os
+from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from bot.universe import WATCHLIST, NEGATIVE_EDGE, get_sector
 from bot.signal_engine import detect
-from core.data import fetch_or_load
+from core.data import fetch_or_load, _csv_path, _is_fresh
 from core.logging import log_signal
 from core.config import load_config
 from core.scorecard import get_signal_stats
@@ -34,6 +35,19 @@ def _get_vix() -> float | None:
         return float(df["Close"].iloc[-1])
     except Exception:
         return None
+
+
+def _prefetch_parallel(tickers: list[str], verbose: bool = True) -> None:
+    """Warm the disk cache for all stale tickers in parallel before scanning."""
+    cfg = load_config()
+    stale = [t for t in tickers if not _is_fresh(_csv_path(t), cfg.cache_ttl_hours)]
+    if not stale:
+        return
+    n_workers = min(12, len(stale))
+    if verbose:
+        print(f"  Pre-fetching {len(stale)} tickers ({n_workers} parallel workers)...")
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        list(pool.map(fetch_or_load, stale))
 
 
 def _market_regime() -> bool:
@@ -75,6 +89,9 @@ def run_scan(watchlist: list[str] = None,
     """
     if watchlist is None:
         watchlist = WATCHLIST
+
+    # Warm cache in parallel so the scan loop only hits disk
+    _prefetch_parallel(watchlist, verbose=verbose)
 
     # Market regime check
     bull_regime = _market_regime()

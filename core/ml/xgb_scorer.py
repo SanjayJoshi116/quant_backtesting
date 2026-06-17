@@ -19,8 +19,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.metrics import (classification_report,
-                              precision_recall_fscore_support,
+from sklearn.metrics import (precision_recall_fscore_support,
                               roc_auc_score)
 
 try:
@@ -163,7 +162,8 @@ def train_final_model(features: pd.DataFrame,
     model = _make_model(pos_weight)
     model.fit(X, y, verbose=False)
     joblib.dump(model, MODEL_PATH)
-    json.dump({"threshold": threshold}, open(THRESH_PATH, "w"))
+    with open(THRESH_PATH, "w") as _f:
+        json.dump({"threshold": threshold}, _f)
     print(f"  Model saved → {MODEL_PATH}")
     return model
 
@@ -185,7 +185,8 @@ def score_signal(sig: dict) -> float:
             return 0.5
         _cached_model = joblib.load(MODEL_PATH)
         if THRESH_PATH.exists():
-            _cached_threshold = json.load(open(THRESH_PATH))["threshold"]
+            with open(THRESH_PATH) as _f:
+                _cached_threshold = json.load(_f).get("threshold", 0.55)
 
     enc = {"PB-L": 0, "BO-L": 1, "BASE-BO": 2, "PB-S": 4, "BO-S": 5}
     row = np.array([[
@@ -207,7 +208,8 @@ def score_signal(sig: dict) -> float:
 def get_threshold() -> float:
     global _cached_threshold
     if THRESH_PATH.exists():
-        _cached_threshold = json.load(open(THRESH_PATH))["threshold"]
+        with open(THRESH_PATH) as _f:
+            _cached_threshold = json.load(_f).get("threshold", 0.55)
     return _cached_threshold
 
 
@@ -285,7 +287,7 @@ if __name__ == "__main__":
     print(f"  Total samples: {len(features)}")
     print(f"  Date range: {features['entry_date'].min().date()} → "
           f"{features['entry_date'].max().date()}")
-    print(f"  Signal type distribution:")
+    print("  Signal type distribution:")
     print(features["signal_type"].value_counts().to_string(header=False)
           .replace("\n", "\n    "))
 
