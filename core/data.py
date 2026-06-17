@@ -31,6 +31,7 @@ _FLOG   = _LOGS / "fetch_log.csv"
 
 _LOG_COLS = ["timestamp", "ticker", "source", "rows", "cache_hit", "data_hash"]
 _log_lock = threading.Lock()
+_yf_lock  = threading.Lock()   # yfinance 1.x is not thread-safe for concurrent downloads
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -124,6 +125,8 @@ def _clean(raw: pd.DataFrame, min_bars: int) -> pd.DataFrame | None:
         return None
     if isinstance(raw.columns, pd.MultiIndex):
         raw.columns = raw.columns.get_level_values(0)
+    if raw.columns.duplicated().any():
+        raw = raw.loc[:, ~raw.columns.duplicated(keep="last")]
     needed = ["Open", "High", "Low", "Close", "Volume"]
     if not all(c in raw.columns for c in needed):
         return None
@@ -165,15 +168,18 @@ def fetch_or_load(ticker: str, force: bool = False) -> pd.DataFrame | None:
         return df
 
     # ── Fetch from yfinance ───────────────────────────────────────────────────
+    # Lock required: yfinance 1.x shares global session state and is not
+    # safe for concurrent calls from multiple threads.
     try:
-        raw = yf.download(
-            ticker,
-            period=cfg.data_period,
-            interval="1d",
-            auto_adjust=False,
-            progress=False,
-            actions=False,
-        )
+        with _yf_lock:
+            raw = yf.download(
+                ticker,
+                period=cfg.data_period,
+                interval="1d",
+                auto_adjust=False,
+                progress=False,
+                actions=False,
+            )
     except Exception as exc:
         print(f"  [ERROR] {ticker}: {exc}")
         _log(ticker, "yfinance", 0, cache_hit=False, data_hash="")

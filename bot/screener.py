@@ -98,10 +98,10 @@ def run_scan(watchlist: list[str] = None,
     vix_level   = _get_vix()
     vix_warning = vix_level is not None and vix_level >= VIX_WARN
     if verbose:
-        status = "BULL ✓" if bull_regime else "BEAR ⚠ — long signals flagged"
+        status = "BULL [OK]" if bull_regime else "BEAR [!!] -- long signals flagged"
         print(f"  Market regime (Nifty vs EMA200): {status}")
         if vix_level is not None:
-            vix_flag = " ⚠ ELEVATED — cluster-day risk" if vix_warning else " ✓ healthy"
+            vix_flag = " [!!] ELEVATED -- cluster-day risk" if vix_warning else " [OK] healthy"
             print(f"  India VIX: {vix_level:.1f}{vix_flag}")
 
     alerts:   list[dict] = []
