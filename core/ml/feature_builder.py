@@ -21,10 +21,8 @@ Features used:
 from __future__ import annotations
 
 import glob
-import os
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 _RESULTS = Path("results")
@@ -56,7 +54,9 @@ def _load_indicators(ticker: str) -> pd.DataFrame | None:
         if len(raw) < 100:
             return None
         return prepare_indicators(raw)
-    except Exception:
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Failed to load indicators for {ticker}: {e}")
         return None
 
 
@@ -100,8 +100,6 @@ def build_features(results_dir: str | None = None) -> pd.DataFrame:
         entry = pd.Timestamp(t["entry_date"])
         if entry not in ind.index:
             loc = ind.index.get_indexer([entry], method="nearest")[0]
-            if loc < 0:
-                continue
             bar = ind.iloc[loc]
         else:
             bar = ind.loc[entry]

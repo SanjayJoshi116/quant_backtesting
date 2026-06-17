@@ -11,7 +11,6 @@ Returns a list of SignalResult dicts — one per triggered signal type.
 import sys
 import os
 import math
-import numpy as np
 import pandas as pd
 
 # Allow imports from the project root (indicators.py lives there)
@@ -68,13 +67,11 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
 
     # ── Pull last-bar values ───────────────────────────────────────────────────
     last = df.iloc[-1]
-    prev = df.iloc[-2]   # needed for mesh-break detection context
 
     c    = last["Close"]
     h    = last["High"]
     lo   = last["Low"]
     v    = last["Volume"]
-    o    = last["Open"]
 
     e21  = last["EMA21"]
     e50  = last["EMA50"]
@@ -96,11 +93,9 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
     bocb  = bool(last["bo_candle_bull"])
     bocs  = bool(last["bo_candle_bear"])
     wbull = bool(last["weekly_bull"])
-    wbear = bool(last["weekly_bear"])
     green = bool(last["green_mesh"])
 
     # Pattern columns
-    near_sup   = bool(last.get("near_support",   False))
     base_bo    = bool(last.get("base_breakout",  False))
     base_q     = int(last.get("base_quality",    0))
 
@@ -215,7 +210,7 @@ def _build(ticker, sig_type, c, atr, rsi, adx, v, vsma,
     intraday_move_pct = round((c - bar_open) / bar_open * 100, 1)
 
     # ── % drawdown from 52-week high ─────────────────────────────────────────
-    recent_high = float(df["High"].rolling(252, min_periods=20).max().iloc[-1])
+    recent_high = float(df["High"].iloc[:-1].rolling(252, min_periods=20).max().iloc[-1])
     pct_from_high = round((c - recent_high) / recent_high * 100, 1)
 
     # ── S/R test count — how many times has price tested the current support ─

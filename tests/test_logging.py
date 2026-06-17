@@ -23,7 +23,6 @@ def test_params_hash_length(sample_config):
 
 
 def test_params_hash_changes_on_param_change(sample_config):
-    from core.config import StrategyConfig
     modified = sample_config.model_copy(update={"sl_mult": 99.9})
     assert _params_hash(sample_config) != _params_hash(modified)
 

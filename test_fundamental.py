@@ -6,7 +6,7 @@ import sys
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, ".")
 
-from core.fundamental_scorer import (
+from core.fundamental_scorer import (  # noqa: E402
     get_quality, get_cached_quality, get_quality_bulk,
     cache_stats, FUND_DIR
 )
@@ -62,7 +62,7 @@ def test_bulk():
 
 
 def test_screener_integration():
-    print(f"\n  Screener integration (get_cached_quality keys):")
+    print("\n  Screener integration (get_cached_quality keys):")
     q = get_cached_quality("INFY.NS")
     required = [
         "qual_score", "qual_tier", "qual_tier_color", "qual_breakdown",
@@ -86,7 +86,7 @@ def test_cache_stats():
 
 if __name__ == "__main__":
     print(f"\n  FUND_DIR: {FUND_DIR}")
-    print(f"\n  Running unified fundamental scorer tests...")
+    print("\n  Running unified fundamental scorer tests...")
 
     q = test_single("INFY.NS")
     test_cache_roundtrip("INFY.NS")
@@ -103,4 +103,4 @@ if __name__ == "__main__":
     print(f"  INFY.NS score {infy_score}/10 >= 5 : {'PASS' if infy_score >= 5 else 'FAIL'}")
     print(f"  TITAN.NS score {titan_score}/10 >= 5 : {'PASS' if titan_score >= 5 else 'FAIL'}")
     print(f"  All screener keys present:    {'PASS' if ok else 'FAIL'}")
-    print(f"\n  Done.")
+    print("\n  Done.")

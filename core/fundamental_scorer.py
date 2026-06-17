@@ -34,7 +34,6 @@ Cache: data/fundamentals/<TICKER>.json — refreshed every 90 days
 
 import json
 import math
-import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -112,35 +111,33 @@ def _fetch(ticker: str) -> dict:
         bs  = t.balance_sheet # balance sheet
         cf  = t.cashflow      # cash flow statement
 
-        two_yr_fin = _has_two_years(fin)
-        two_yr_bs  = _has_two_years(bs)
-        two_yr_cf  = _has_two_years(cf)
-
         # ── Income statement rows ─────────────────────────────────────────────
         rev_s   = _row(fin, "Total Revenue",     "Revenue")
         gp_s    = _row(fin, "Gross Profit")
         ni_s    = _row(fin, "Net Income",         "Net Income Common Stockholders")
-        ebit_s  = _row(fin, "EBIT",              "Operating Income")
 
-        rev_cur  = _col(rev_s,  0);  rev_prv  = _col(rev_s,  1)
-        gp_cur   = _col(gp_s,   0);  gp_prv   = _col(gp_s,   1)
-        ni_cur   = _col(ni_s,   0);  ni_prv   = _col(ni_s,   1)
+        rev_cur  = _col(rev_s,  0)
+        rev_prv  = _col(rev_s,  1)
+        gp_cur   = _col(gp_s,   0)
+        gp_prv   = _col(gp_s,   1)
+        ni_cur   = _col(ni_s,   0)
+        ni_prv   = _col(ni_s,   1)
 
         # ── Balance sheet rows ────────────────────────────────────────────────
         assets_s = _row(bs, "Total Assets")
         debt_s   = _row(bs, "Total Debt",
                             "Long Term Debt",
                             "Long Term Debt And Capital Lease Obligation")
-        eq_s     = _row(bs, "Stockholders Equity",
-                            "Total Stockholders Equity",
-                            "Common Stockholders Equity")
         shares_s = _row(bs, "Ordinary Shares Number",
                             "Share Issued",
                             "Common Stock")
 
-        assets_cur = _col(assets_s, 0);  assets_prv = _col(assets_s, 1)
-        debt_cur   = _col(debt_s,   0);  debt_prv   = _col(debt_s,   1)
-        shares_cur = _col(shares_s, 0);  shares_prv = _col(shares_s, 1)
+        assets_cur = _col(assets_s, 0)
+        assets_prv = _col(assets_s, 1)
+        debt_cur   = _col(debt_s,   0)
+        debt_prv   = _col(debt_s,   1)
+        shares_cur = _col(shares_s, 0)
+        shares_prv = _col(shares_s, 1)
 
         # ── Cash flow rows ────────────────────────────────────────────────────
         ocf_s = _row(cf, "Operating Cash Flow",
@@ -617,7 +614,7 @@ if __name__ == "__main__":
     else:
         # Default demo: run on a few well-known stocks
         demos = ["INFY.NS", "HDFCBANK.NS", "COALINDIA.NS", "WIPRO.NS", "TITAN.NS"]
-        print(f"\nUnified Fundamental Quality Score — Demo")
+        print("\nUnified Fundamental Quality Score — Demo")
         print(f"{'═'*55}")
         for t in demos:
             q = get_quality(t, force=args.force)

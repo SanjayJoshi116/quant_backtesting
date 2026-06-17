@@ -31,6 +31,9 @@ Three-tier quantitative trading system for NSE (Indian equities):
 - **Cache layer** — use `core/data.py` (`fetch_or_load()`) for all data fetching, not raw `yfinance` calls. Both the backtester and live screener share this layer to guarantee identical data.
 - **Append-only audit logs** — `core/logging.py` writes one row per backtest run / signal / data fetch to `logs/`. Never truncate these files.
 - **Config hash** — each audit log row includes a config version hash so results are traceable to the exact parameter set.
+- **Config version** — `config_version` is a first-class field on `StrategyConfig` (read from top-level key in `strategy.yaml`). Audit logs write the real version (e.g. `"1.3"`), not a hardcoded default. Bump `config_version` in `strategy.yaml` whenever any parameter changes.
+- **NaN bar handling** — the backtester force-closes any open position that hits a NaN indicator bar, recording exit reason `DATA_GAP`. Positions are never left orphaned.
+- **Pandas 2.0 compat** — use `.reindex(idx).ffill()` not `.reindex(idx, method="ffill")`. Use `df = df.ffill().dropna()` not `inplace=True`.
 
 ## Key modules — where things live
 
@@ -73,6 +76,7 @@ Copy `.env.example` → `.env` and fill in values.
 pytest tests/                  # unit tests (config, data, logging, signals)
 python test_fundamental.py     # fundamental scorer integration test
 python main.py                 # full backtest = integration test for the engine
+G:\Anaconda\envs\stock\Scripts\ruff.exe check .   # linting (zero errors expected)
 ```
 
 ## What NOT to do
@@ -82,3 +86,7 @@ python main.py                 # full backtest = integration test for the engine
 - Don't add lookahead bias to indicators (no future data, no `.shift(-n)`)
 - Don't call `yfinance` directly in new code — go through `core/data.py`
 - Don't truncate or delete files in `logs/` — they are append-only audit trails
+- Don't swallow exceptions silently (`except Exception: pass`) — at minimum `warnings.warn(str(e))`
+- Don't use `reindex(method="ffill")` or `inplace=True` — both deprecated in pandas 2.0
+- Don't use `open(path)` without a context manager — always `with open(path) as f:`
+- Don't count breakeven trades (`pnl_pct == 0`) as losses — use `< 0` not `<= 0` for loss filters

@@ -125,8 +125,7 @@ def _clean(raw: pd.DataFrame, min_bars: int) -> pd.DataFrame | None:
     if not all(c in raw.columns for c in needed):
         return None
     df = raw[needed].copy()
-    df.ffill(inplace=True)
-    df.dropna(inplace=True)
+    df = df.ffill().dropna()
     df.index = pd.to_datetime(df.index).tz_localize(None)
     df.index.name = "Date"
     df = df[~df.index.duplicated(keep="last")]   # drop duplicate dates

@@ -219,6 +219,9 @@ pytest tests/
 
 # Fundamental scorer specifically
 python test_fundamental.py
+
+# Linting (requires ruff in stock conda env)
+G:\Anaconda\envs\stock\Scripts\ruff.exe check .
 ```
 
 ---

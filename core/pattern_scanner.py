@@ -87,7 +87,6 @@ def detect_double_bottom(df: pd.DataFrame,
         return None
 
     close  = df["Close"].values
-    high_s = df["High"]
     low_s  = df["Low"]
     sub    = df.iloc[-lookback:]
 
@@ -339,8 +338,10 @@ def detect_falling_wedge(df: pd.DataFrame,
 
     h_slope, h_inter = np.polyfit(h_idx, h_vals, 1)
     l_slope, l_inter = np.polyfit(l_idx, l_vals, 1)
-    h_slope = float(h_slope); h_inter = float(h_inter)
-    l_slope = float(l_slope); l_inter = float(l_inter)
+    h_slope = float(h_slope)
+    h_inter = float(h_inter)
+    l_slope = float(l_slope)
+    l_inter = float(l_inter)
 
     # ── Rule 1: Both lines must be clearly declining ──────────────────────────
     # Normalise by price to get % slope per bar
@@ -748,7 +749,6 @@ def detect_cup_and_handle(df: pd.DataFrame,
 
     close = df["Close"].values
     high  = df["High"].values
-    low   = df["Low"].values
 
     # ── Find left rim: highest high in the lookback (not too recent) ──────────
     search_start = max(0, n - lookback)
@@ -1010,9 +1010,6 @@ def detect_symmetrical_triangle(df: pd.DataFrame,
     # Slopes should be roughly equal in magnitude (symmetrical)
     if abs(abs(h_slope) - abs(l_slope)) / max(abs(h_slope), 1e-6) > 0.50:
         return None
-
-    apex_x    = (l_vals[0] - h_vals[0]) / (h_slope - l_slope) if h_slope != l_slope else 0
-    bars_left = max(0, int(apex_x - n))
 
     current      = float(df["Close"].iloc[-1])
     upper_now    = float(h_vals[-1])
