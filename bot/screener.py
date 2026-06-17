@@ -37,17 +37,30 @@ def _get_vix() -> float | None:
         return None
 
 
-def _prefetch_parallel(tickers: list[str], verbose: bool = True) -> None:
-    """Warm the disk cache for all stale tickers in parallel before scanning."""
+def _prefetch_parallel(tickers: list[str], verbose: bool = True,
+                       progress_callback=None) -> None:
+    """Warm the disk cache for all stale tickers sequentially (yfinance not thread-safe)."""
     cfg = load_config()
     stale = [t for t in tickers if not _is_fresh(_csv_path(t), cfg.cache_ttl_hours)]
     if not stale:
         return
-    n_workers = min(12, len(stale))
+    total = len(stale)
     if verbose:
-        print(f"  Pre-fetching {len(stale)} tickers ({n_workers} parallel workers)...")
-    with ThreadPoolExecutor(max_workers=n_workers) as pool:
-        list(pool.map(fetch_or_load, stale))
+        print(f"  Caching {total} tickers...")
+
+    done = [0]
+
+    def _fetch_one(t: str):
+        fetch_or_load(t)
+        done[0] += 1
+        if progress_callback:
+            try:
+                progress_callback(done[0], total, f"__cache__{t}")
+            except Exception:
+                pass
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        list(pool.map(_fetch_one, stale))
 
 
 def _market_regime() -> bool:
@@ -90,8 +103,8 @@ def run_scan(watchlist: list[str] = None,
     if watchlist is None:
         watchlist = WATCHLIST
 
-    # Warm cache in parallel so the scan loop only hits disk
-    _prefetch_parallel(watchlist, verbose=verbose)
+    # Warm cache before scanning (sequential — yfinance not thread-safe)
+    _prefetch_parallel(watchlist, verbose=verbose, progress_callback=progress_callback)
 
     # Market regime check
     bull_regime = _market_regime()

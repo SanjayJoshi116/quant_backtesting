@@ -529,20 +529,32 @@ with tab_screen:
             prog_info = st.empty()
 
             def _on_progress(current: int, total: int, ticker: str):
-                pct  = current / max(total, 1)
-                name = ticker.replace(".NS","") if ticker != "done" else "Complete"
-                prog_bar.progress(
-                    min(pct, 1.0),
-                    text=f"Scanning {current}/{total} — {name}"
-                )
-                prog_info.markdown(
-                    f"<span style='color:#6b7280;font-size:12px'>"
-                    f"{'⠿ ' if ticker!='done' else '✅ '}"
-                    f"{current}/{total} stocks scanned"
-                    f"{'  ·  ' + name if ticker!='done' else '  — Scan complete'}"
-                    f"</span>",
-                    unsafe_allow_html=True,
-                )
+                if ticker.startswith("__cache__"):
+                    # Pre-fetch / cache warm-up phase
+                    name = ticker[9:].replace(".NS", "")
+                    pct  = current / max(total, 1) * 0.5   # cache = first 50%
+                    prog_bar.progress(min(pct, 0.5),
+                                      text=f"Caching data {current}/{total} — {name}")
+                    prog_info.markdown(
+                        f"<span style='color:#6b7280;font-size:12px'>"
+                        f"Downloading {current}/{total} stocks into cache...</span>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    # Signal-detection scan phase (second 50%)
+                    pct  = 0.5 + current / max(total, 1) * 0.5
+                    name = ticker.replace(".NS", "") if ticker != "done" else "Complete"
+                    prog_bar.progress(
+                        min(pct, 1.0),
+                        text=f"Scanning {current}/{total} — {name}"
+                    )
+                    prog_info.markdown(
+                        f"<span style='color:#6b7280;font-size:12px'>"
+                        f"{current}/{total} stocks scanned"
+                        f"{'  .  ' + name if ticker != 'done' else '  done'}"
+                        f"</span>",
+                        unsafe_allow_html=True,
+                    )
 
             res = run_scan(verbose=False, min_pattern_confidence="HIGH",
                           progress_callback=_on_progress)
