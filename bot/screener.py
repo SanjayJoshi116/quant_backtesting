@@ -189,7 +189,13 @@ def run_scan(watchlist: list[str] = None,
         print(f"\n  Could not process: {', '.join(failed)}")
         print(f"  Signals found: {len(alerts)}  |  Patterns found: {len(patterns)}")
 
-    alerts.sort(key=lambda s: (-s["score"], s["direction"]))
+    _tier_rank = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "UNKNOWN": 3}
+    _sig_rank  = {"PB-L": 0, "BASE-BO": 1, "BO-L": 2, "PB-S": 3, "BO-S": 4}
+    alerts.sort(key=lambda s: (
+        -s["score"],
+        _tier_rank.get(s.get("qual_tier", "UNKNOWN"), 3),
+        _sig_rank.get(s.get("signal_type", ""), 9),
+    ))
 
     # Rank ALL collected patterns by quality score, then cap for email
     patterns.sort(key=lambda p: -p.get("_quality", 0))
