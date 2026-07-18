@@ -10,6 +10,9 @@ jobs:
   screen:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write   # allow committing the updated paper-trade ledger back
+
     steps:
       - uses: actions/checkout@v4
 
@@ -35,3 +38,19 @@ jobs:
           GMAIL_SENDER:      ${{ secrets.GMAIL_SENDER }}
           GMAIL_APP_PASS:    ${{ secrets.GMAIL_APP_PASS }}
           ALERT_RECIPIENTS:  ${{ secrets.ALERT_RECIPIENTS }}
+
+      - name: Persist paper-trade ledger
+        # The screener logs new signals + updates open positions in
+        # logs/paper_trades.csv. Commit it back so the ledger survives across
+        # cloud runs instead of being discarded when the runner is torn down.
+        run: |
+          git config user.name  "daily-screener-bot"
+          git config user.email "actions@github.com"
+          git add logs/paper_trades.csv
+          if git diff --cached --quiet; then
+            echo "No paper-trade changes to commit."
+          else
+            git commit -m "chore: update paper-trade ledger [skip ci]"
+            git pull --rebase --autostash origin master
+            git push
+          fi

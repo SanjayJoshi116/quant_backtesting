@@ -66,7 +66,10 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
-logs/
+# Ignore all logs EXCEPT the paper-trade ledger, which the daily screener
+# commits back so paper trading state persists across cloud runs.
+logs/*
+!logs/paper_trades.csv
 
 # ── WINDOWS SPECIFIC ──────────────────────────────────────────────────────────
 desktop.ini
