@@ -16,6 +16,7 @@ Rules (user-defined):
 
 from __future__ import annotations
 
+import warnings
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,13 @@ MAX_DAYS  = 30   # 30 calendar days (~21 trading days)
 # 14-day window expires 70% of trades before SL/TP — too noisy.
 # 30-day window expires only 30% — captures most meaningful outcomes.
 
+# A stored entry price this far from the cached close on the signal date means
+# the two are on different scales — either a corporate action (recoverable, see
+# _pending_split_factor) or corrupt cache data (not recoverable).
+PRICE_TOL_LO, PRICE_TOL_HI = 0.7, 1.3
+# How closely a split factor must explain the mismatch before we trust it.
+SPLIT_TOL = 0.05   # 5% relative
+
 COLUMNS = [
     "signal_date", "ticker",       "signal_type", "direction",
     "entry_price", "sl",           "tp",          "rr",
@@ -35,6 +43,7 @@ COLUMNS = [
     "status",                                      # OPEN / TP_HIT / SL_HIT / EXPIRED
     "exit_price",  "exit_date",    "exit_reason",
     "pnl_pct",     "days_held",
+    "split_adj",   # cumulative split factor applied to entry/sl/tp (blank = none)
 ]
 
 
@@ -44,12 +53,57 @@ def _load() -> pd.DataFrame:
     if not PAPER_LOG.exists():
         return pd.DataFrame(columns=COLUMNS)
     df = pd.read_csv(PAPER_LOG, parse_dates=["signal_date", "exit_date"])
+    # Ledgers written before a column existed are still valid — backfill blanks
+    # so callers can index every column unconditionally.
+    for col in COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
+    # Exit fields are blank until a position closes. On a young ledger they
+    # parse as all-NaN float64, which rejects the string written on the first
+    # exit — hold them as object so the write always lands.
+    for col in ("status", "exit_reason", "exit_date", "exit_price",
+                "pnl_pct", "days_held", "split_adj"):
+        df[col] = df[col].astype(object)
     return df
 
 
 def _save(df: pd.DataFrame) -> None:
     PAPER_LOG.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(PAPER_LOG, index=False)
+
+
+def _empty_counts() -> dict:
+    return {"updated": 0, "tp_hit": 0, "sl_hit": 0, "expired": 0,
+            "data_error": 0, "split_adjusted": 0, "deferred": 0,
+            "still_open": 0}
+
+
+# ── Corporate-action reconciliation ───────────────────────────────────────────
+
+def _pending_split_factor(ticker: str, signal_date: pd.Timestamp,
+                          today: pd.Timestamp, already_applied: float) -> float | None:
+    """
+    Return the split factor still to be applied to a position's stored levels,
+    or None if the ticker has no qualifying split.
+
+    Yahoo divides pre-ex-date prices by the split factor, so a position opened
+    before an ex-date holds entry/SL/TP on a scale `F` times the cached one,
+    where F is the product of every split since. `already_applied` is what a
+    previous run has folded in — dividing it out keeps a second split from
+    re-applying the first.
+    """
+    from core.data import fetch_splits
+
+    splits = fetch_splits(ticker)
+    if splits.empty:
+        return None
+
+    window = splits[(splits.index > signal_date) & (splits.index <= today)]
+    if window.empty:
+        return None
+
+    pending = float(window.prod()) / (already_applied or 1.0)
+    return pending if pending > 0 and abs(pending - 1.0) > 1e-9 else None
 
 
 # ── Core functions ────────────────────────────────────────────────────────────
@@ -99,6 +153,7 @@ def log_new_signals(signals: list[dict]) -> int:
             "status":      "OPEN",
             "exit_price":  "",  "exit_date":   "",
             "exit_reason": "",  "pnl_pct":     "",  "days_held": "",
+            "split_adj":   "",
         })
         open_tickers.add(ticker)    # prevent two adds for the same ticker
 
@@ -123,17 +178,18 @@ def update_open_positions() -> dict:
     """
     df = _load()
     if df.empty:
-        return {"updated": 0, "tp_hit": 0, "sl_hit": 0,
-                "expired": 0, "still_open": 0}
+        return _empty_counts()
 
     open_idx = df.index[df["status"] == "OPEN"].tolist()
     if not open_idx:
-        return {"updated": 0, "tp_hit": 0, "sl_hit": 0,
-                "expired": 0, "still_open": 0}
+        counts = _empty_counts()
+        counts["still_open"] = 0
+        return counts
 
     from core.data import fetch_or_load
     today = pd.Timestamp.today().normalize()
-    counts = {"tp_hit": 0, "sl_hit": 0, "expired": 0}
+    counts = {"tp_hit": 0, "sl_hit": 0, "expired": 0,
+              "data_error": 0, "split_adjusted": 0, "deferred": 0}
 
     for idx in open_idx:
         row          = df.loc[idx]
@@ -143,30 +199,67 @@ def update_open_positions() -> dict:
         tp           = float(row["tp"])
         signal_date  = pd.Timestamp(row["signal_date"])
         days_elapsed = (today - signal_date).days
+        prior_adj    = pd.to_numeric(row.get("split_adj"), errors="coerce")
+        prior_adj    = float(prior_adj) if pd.notna(prior_adj) else 1.0
 
         try:
             ohlc = fetch_or_load(ticker)
             if ohlc is None or ohlc.empty:
                 continue
 
-            # ── Price sanity check: catch yfinance bad/adjusted data ─────────
-            # If the price on signal date doesn't match stored entry by >30%,
-            # the cache has corrupt/adjusted data — don't trust SL/TP checks.
+            # ── Price sanity check ───────────────────────────────────────────
+            # A stored entry far from the cached close on the signal date means
+            # the two are on different scales. Usually that is a split or bonus
+            # issue, which Yahoo applies retroactively to the whole history —
+            # recoverable by rescaling the stored levels. Only a mismatch no
+            # corporate action explains is genuinely corrupt data.
             bar_on_date = ohlc[ohlc.index.normalize() == signal_date.normalize()]
             if not bar_on_date.empty:
                 actual_close = float(bar_on_date["Close"].iloc[-1])
                 if actual_close > 0:
                     ratio = entry_price / actual_close
-                    if ratio < 0.7 or ratio > 1.3:
-                        df.at[idx, "status"]      = "DATA_ERROR"
-                        df.at[idx, "exit_reason"] = f"PRICE_MISMATCH_{ratio:.2f}x"
-                        df.at[idx, "exit_date"]   = today.strftime("%Y-%m-%d")
-                        df.at[idx, "days_held"]   = days_elapsed
-                        counts["expired"] += 1   # count in expired bucket so it closes
-                        continue
+                    if ratio < PRICE_TOL_LO or ratio > PRICE_TOL_HI:
+                        factor = _pending_split_factor(
+                            ticker, signal_date, today, prior_adj
+                        )
+                        # The mismatch ratio IS the outstanding split factor, so
+                        # the two agreeing is what confirms the corporate action.
+                        if factor and abs(ratio / factor - 1) < SPLIT_TOL:
+                            entry_price /= factor
+                            sl          /= factor
+                            tp          /= factor
+                            df.at[idx, "entry_price"] = round(entry_price, 4)
+                            df.at[idx, "sl"]          = round(sl, 4)
+                            df.at[idx, "tp"]          = round(tp, 4)
+                            df.at[idx, "split_adj"]   = round(prior_adj * factor, 6)
+                            counts["split_adjusted"] += 1
+                            # fall through — the position stays open and is
+                            # replayed below on the now-consistent scale
+                        elif days_elapsed < MAX_DAYS:
+                            # Most mismatches are a single bad fetch that the
+                            # next refresh corrects; one poisoned batch once
+                            # closed 38 live positions. Leave the trade open and
+                            # retry rather than burning it on transient data.
+                            counts["deferred"] += 1
+                            continue
+                        else:
+                            # Still wrong at the end of the trade window — no
+                            # further refresh will rescue it.
+                            df.at[idx, "status"]      = "DATA_ERROR"
+                            df.at[idx, "exit_reason"] = f"PRICE_MISMATCH_{ratio:.2f}x"
+                            df.at[idx, "exit_date"]   = today.strftime("%Y-%m-%d")
+                            df.at[idx, "days_held"]   = days_elapsed
+                            counts["data_error"] += 1
+                            continue
 
-            # Bars strictly AFTER the signal date
-            bars = ohlc[ohlc.index > signal_date].copy()
+            # Bars strictly AFTER the signal date and inside the holding window.
+            # The window cap matters: without it a skipped run lets a position
+            # keep running until it happens to touch SL or TP, so a trade that
+            # should have expired at day 30 resolves at day 47 instead. That is
+            # not a neutral rounding — it silently rewrites the outcome.
+            window_end = signal_date + pd.Timedelta(days=MAX_DAYS)
+            bars = ohlc[(ohlc.index > signal_date)
+                        & (ohlc.index <= window_end)].copy()
             if bars.empty:
                 # Data not yet updated — check expiry only
                 if days_elapsed >= MAX_DAYS:
@@ -205,21 +298,26 @@ def update_open_positions() -> dict:
                 counts[status.lower()] += 1
 
             elif days_elapsed >= MAX_DAYS:
+                # Exit on the last bar INSIDE the window, not the latest bar —
+                # for a position resolved late those are not the same day.
+                last_ts    = bars.index[-1]
                 last_close = float(bars["Close"].iloc[-1])
                 pnl        = (last_close - entry_price) / entry_price * 100
                 df.at[idx, "status"]      = "EXPIRED"
                 df.at[idx, "exit_price"]  = round(last_close, 2)
-                df.at[idx, "exit_date"]   = today.strftime("%Y-%m-%d")
+                df.at[idx, "exit_date"]   = pd.Timestamp(last_ts).strftime("%Y-%m-%d")
                 df.at[idx, "exit_reason"] = "EXPIRED"
                 df.at[idx, "pnl_pct"]     = round(pnl, 2)
-                df.at[idx, "days_held"]   = days_elapsed
+                df.at[idx, "days_held"]   = (pd.Timestamp(last_ts) - signal_date).days
                 counts["expired"] += 1
 
-        except Exception:
+        except Exception as exc:
+            warnings.warn(f"{ticker}: paper position not updated ({exc})")
             continue
 
     _save(df)
-    counts["updated"]    = sum(counts.values())
+    counts["updated"]    = (counts["tp_hit"] + counts["sl_hit"]
+                            + counts["expired"] + counts["data_error"])
     counts["still_open"] = int((df["status"] == "OPEN").sum())
     return counts
 

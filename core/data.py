@@ -49,6 +49,16 @@ def _csv_path(ticker: str) -> Path:
     return _RAW / f"{_safe_name(ticker)}.csv"
 
 
+def _splits_path(ticker: str) -> Path:
+    return _RAW / f"{_safe_name(ticker)}__splits.csv"
+
+
+def _naive(idx) -> pd.DatetimeIndex:
+    """Return idx as a tz-naive DatetimeIndex (wall time preserved)."""
+    idx = pd.DatetimeIndex(pd.to_datetime(idx))
+    return idx.tz_localize(None) if idx.tz is not None else idx
+
+
 def _last_nse_close() -> datetime:
     """
     Return the datetime of the most recent completed NSE session (15:30 IST).
@@ -195,3 +205,54 @@ def fetch_or_load(ticker: str, force: bool = False) -> pd.DataFrame | None:
     h = _hash(df)
     _log(ticker, "yfinance", len(df), cache_hit=False, data_hash=h)
     return df
+
+
+def fetch_splits(ticker: str, force: bool = False) -> pd.Series:
+    """
+    Return split/bonus factors for `ticker`, indexed by ex-date.
+
+    The value is new shares per old share: 5.0 for a 1:5 split or a 1:4 bonus,
+    0.01 for a 100:1 reverse split. Yahoo back-adjusts historical OHLC for these
+    even with auto_adjust=False, so prices before an ex-date are divided by the
+    factor. Callers use this to rescale levels recorded on the pre-split scale
+    (see core/paper_trader.py) instead of discarding the position.
+
+    Returns an empty Series when the ticker has no splits or the fetch fails —
+    callers must treat "no splits" and "lookup unavailable" the same way.
+    """
+    cfg  = load_config()
+    path = _splits_path(ticker)
+    _ensure_dirs()
+
+    # ── Cache hit ─────────────────────────────────────────────────────────────
+    if not force and _is_fresh(path, cfg.cache_ttl_hours):
+        try:
+            cached = pd.read_csv(path, index_col=0, parse_dates=True)
+            s = (pd.Series(dtype="float64") if cached.empty
+                 else cached.iloc[:, 0].astype(float))
+            s.index = _naive(s.index)
+            _log(ticker, "cache-splits", len(s), cache_hit=True, data_hash="")
+            return s
+        except Exception as exc:
+            warnings.warn(f"{ticker}: unreadable split cache ({exc}) — refetching")
+
+    # ── Fetch from yfinance ───────────────────────────────────────────────────
+    try:
+        with _yf_lock:
+            raw = yf.Ticker(ticker).splits
+    except Exception as exc:
+        warnings.warn(f"{ticker}: split lookup failed ({exc})")
+        _log(ticker, "yfinance-splits", 0, cache_hit=False, data_hash="")
+        return pd.Series(dtype="float64")
+
+    if raw is None or len(raw) == 0:
+        s = pd.Series(dtype="float64")
+    else:
+        s = pd.Series(raw).astype(float)
+        s.index = _naive(s.index)
+        s = s[s > 0]                      # a zero/negative factor is corrupt
+
+    s.name = "split_ratio"
+    s.rename_axis("Date").to_frame().to_csv(path)
+    _log(ticker, "yfinance-splits", len(s), cache_hit=False, data_hash="")
+    return s

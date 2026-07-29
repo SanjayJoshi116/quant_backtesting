@@ -257,8 +257,15 @@ def run_scan(watchlist: list[str] = None,
                   f"{paper_summary.get('updated',0)} positions updated "
                   f"(TP:{paper_summary.get('tp_hit',0)} "
                   f"SL:{paper_summary.get('sl_hit',0)} "
-                  f"EXP:{paper_summary.get('expired',0)}) "
+                  f"EXP:{paper_summary.get('expired',0)} "
+                  f"ERR:{paper_summary.get('data_error',0)}) "
                   f"| {paper_summary.get('still_open',0)} still open")
+            # Surface data-quality events so a bad feed is visible in the run
+            # log rather than showing up later as missing trades.
+            if paper_summary.get("split_adjusted") or paper_summary.get("deferred"):
+                print(f"  Data quality: "
+                      f"{paper_summary.get('split_adjusted',0)} rescaled for splits, "
+                      f"{paper_summary.get('deferred',0)} deferred on bad prices")
     except Exception as e:
         if verbose:
             print(f"  [WARN] Paper trader: {e}")
