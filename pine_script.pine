@@ -1,6 +1,12 @@
 //@version=5
+// max_bars_back: mesh_bars references green_mesh[1] inside a var reassignment,
+// alongside EMA200 and a weekly request.security. On symbols with thin history
+// Pine can otherwise throw "requested historical offset is beyond the historical
+// buffer's limit" — and when the script errors, NOTHING renders, dashboard
+// included. Declaring the buffer explicitly removes that failure mode.
 strategy("NSE Swing v6 – Pro UI",
      overlay=true,
+     max_bars_back=1000,
      default_qty_type=strategy.percent_of_equity,
      default_qty_value=2,
      commission_type=strategy.commission.percent,
@@ -30,8 +36,18 @@ atr_len      = input.int(14,    "ATR Length",             group=grp_risk)
 sl_mult      = input.float(1.5, "SL  (ATR×)",             group=grp_risk, step=0.1)
 tp_mult_long = input.float(3.5, "TP  (ATR×) – Longs",    group=grp_risk, step=0.1)
 tp_short     = input.float(2.25,"TP  (ATR×) – Shorts",   group=grp_risk, step=0.1)
+// Trailing stop is OFF by default so this chart matches the Python backtester,
+// which removed it (backtester.py: "Exit logic: MeshBreak -> SL -> TP, trailing
+// stop removed"). Every validated figure — Sharpe ~1.1, alpha +10.1%/yr, and the
+// 517-trade paper-trading match — describes the no-trail logic. Turning this on
+// makes the chart a DIFFERENT strategy from the one that was tested.
+use_trail    = input.bool(false,"Trailing stop (off = matches backtest)",
+                                                          group=grp_risk)
 trail_atr    = input.float(1.0, "Trail activates (ATR×)", group=grp_risk, step=0.1)
 trail_offset = input.float(1.5, "Trail offset  (ATR×)",   group=grp_risk, step=0.1)
+
+grp_disp = "Display"
+compact  = input.bool(true, "Compact dashboard (fits short panes)", group=grp_disp)
 
 grp_entry = "Entry Settings"
 use_pb    = input.bool(true,   "Enable Pullback entries",  group=grp_entry)
@@ -115,9 +131,14 @@ bo_candle_bull = close > open and close >= high * 0.96
 bo_candle_bear = close < open and close <= low  * 1.04
 
 // ─── MARKET REGIME FILTER ────────────────────────────────────────────────────
-nifty_close   = request.security(nifty_sym, "D", close,                      lookahead=barmerge.lookahead_off)
-nifty_ema200  = request.security(nifty_sym, "D", ta.ema(close, regime_ema),  lookahead=barmerge.lookahead_off)
-nifty_ema50   = request.security(nifty_sym, "D", ta.ema(close, 50),          lookahead=barmerge.lookahead_off)
+// One tuple call instead of three separate round-trips: fewer requests, and the
+// three values are guaranteed to come from the same fetch. If the Nifty feed has
+// not loaded yet these are na — hence the na guard on regime_ok below, without
+// which a cold cache silently blocks every long entry.
+[nifty_close, nifty_ema200, nifty_ema50] = request.security(
+     nifty_sym, "D",
+     [close, ta.ema(close, regime_ema), ta.ema(close, 50)],
+     lookahead=barmerge.lookahead_off)
 
 // Three-state market regime:
 // BULL     = Nifty above EMA200 AND EMA50 above EMA200 (clear uptrend)
@@ -126,7 +147,9 @@ nifty_ema50   = request.security(nifty_sym, "D", ta.ema(close, 50),          loo
 market_bull     = nifty_close > nifty_ema200 and nifty_ema50 > nifty_ema200
 market_bear     = nifty_close < nifty_ema200
 market_sideways = not market_bull and not market_bear
-regime_ok       = not use_regime or market_bull  // only allow longs in bull regime
+// na(nifty_close): if the Nifty feed hasn't arrived, fail OPEN rather than
+// silently suppressing every signal on the chart.
+regime_ok       = not use_regime or na(nifty_close) or market_bull
 
 // ─── FLAT BASE DETECTION ──────────────────────────────────────────────────────
 base_high_prev = ta.highest(high, base_period)[1]
@@ -257,7 +280,7 @@ if in_long
     tp_price = entry_price + atr * tp_mult_long
     if mesh_breaks_red
         strategy.close("Long", comment="Mesh Break")
-    else if trail_active_l and low <= trail_sl_long
+    else if use_trail and trail_active_l and low <= trail_sl_long
         strategy.close("Long", comment="Trail Stop")
     else if low <= sl_price
         strategy.close("Long", comment="SL")
@@ -269,7 +292,7 @@ if in_short
     tp_price = entry_price - atr * tp_short
     if mesh_breaks_green
         strategy.close("Short", comment="Mesh Break")
-    else if trail_active_s and high >= trail_sl_short
+    else if use_trail and trail_active_s and high >= trail_sl_short
         strategy.close("Short", comment="Trail Stop")
     else if high >= sl_price
         strategy.close("Short", comment="SL")
@@ -383,6 +406,12 @@ plot(in_short and trail_active_s ? trail_sl_short : na, "Trail Short",
 
 // ─── PROFESSIONAL DASHBOARD TABLE ─────────────────────────────────────────────
 // Bigger, cleaner, sectioned — dark theme
+// TradingView renders tables inside the chart pane and DROPS one that exceeds
+// the available height rather than clipping it — which is why an 18-row table
+// appears on a tall pane and vanishes on a short one. Compact mode keeps the
+// first 10 rows (through the signal block) so it always fits.
+// Capacity stays 18; unwritten rows are simply not drawn, so compact mode
+// shortens the rendered table without needing a second table object.
 var table dash = table.new(position.top_right, 3, 18,
      frame_width=2, frame_color=color.new(color.gray, 40),
      border_width=1, border_color=color.new(color.gray, 60),
@@ -525,59 +554,63 @@ if barstate.islast
          text_color=color.new(color.gray, 30), text_size=size.tiny)
 
     // ── SECTION: TRADE ────────────────────────────────────────────────────────
-    table.cell(dash, 0, 13, "TRADE",
-         bgcolor=col_section, text_color=color.new(color.gray, 10),
-         text_size=size.small, text_halign=text.align_left)
-    table.cell(dash, 1, 13, "", bgcolor=col_section)
-    table.cell(dash, 2, 13, "", bgcolor=col_section)
+    // Compact mode stops here. The TRADE block is the least-read part of the
+    // dashboard, and dropping it keeps the table short enough that TradingView
+    // still renders it on a short pane instead of discarding the whole thing.
+    if not compact
+        table.cell(dash, 0, 13, "TRADE",
+             bgcolor=col_section, text_color=color.new(color.gray, 10),
+             text_size=size.small, text_halign=text.align_left)
+        table.cell(dash, 1, 13, "", bgcolor=col_section)
+        table.cell(dash, 2, 13, "", bgcolor=col_section)
 
-    table.cell(dash, 0, 14, "Position",
-         text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 14,
-         in_long  ? "LONG"  :
-         in_short ? "SHORT" : "FLAT",
-         text_color = in_long  ? color.lime :
-                      in_short ? color.red  : color.gray,
-         text_size=size.normal, text_halign=text.align_center)
-    table.cell(dash, 2, 14,
-         in_long or in_short ? "Active trade" : "Waiting for signal",
-         text_color=color.new(color.gray, 30), text_size=size.tiny)
+        table.cell(dash, 0, 14, "Position",
+             text_color=color.new(color.gray, 20), text_size=size.small)
+        table.cell(dash, 1, 14,
+             in_long  ? "LONG"  :
+             in_short ? "SHORT" : "FLAT",
+             text_color = in_long  ? color.lime :
+                          in_short ? color.red  : color.gray,
+             text_size=size.normal, text_halign=text.align_center)
+        table.cell(dash, 2, 14,
+             in_long or in_short ? "Active trade" : "Waiting for signal",
+             text_color=color.new(color.gray, 30), text_size=size.tiny)
 
-    table.cell(dash, 0, 15, "Entry price",
-         text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 15,
-         (in_long or in_short) and not na(entry_price) ?
-             str.tostring(math.round(entry_price, 2)) : "–",
-         text_color = in_long  ? color.lime :
-                      in_short ? color.red  : color.gray,
-         text_size=size.small, text_halign=text.align_center)
-    table.cell(dash, 2, 15,
-         in_long  and not na(entry_price) ?
-             "SL " + str.tostring(math.round(entry_price - atr * sl_mult, 2)) :
-         in_short and not na(entry_price) ?
-             "SL " + str.tostring(math.round(entry_price + atr * sl_mult, 2)) : "–",
-         text_color=color.new(color.red, 10), text_size=size.tiny)
+        table.cell(dash, 0, 15, "Entry price",
+             text_color=color.new(color.gray, 20), text_size=size.small)
+        table.cell(dash, 1, 15,
+             (in_long or in_short) and not na(entry_price) ?
+                 str.tostring(math.round(entry_price, 2)) : "–",
+             text_color = in_long  ? color.lime :
+                          in_short ? color.red  : color.gray,
+             text_size=size.small, text_halign=text.align_center)
+        table.cell(dash, 2, 15,
+             in_long  and not na(entry_price) ?
+                 "SL " + str.tostring(math.round(entry_price - atr * sl_mult, 2)) :
+             in_short and not na(entry_price) ?
+                 "SL " + str.tostring(math.round(entry_price + atr * sl_mult, 2)) : "–",
+             text_color=color.new(color.red, 10), text_size=size.tiny)
 
-    table.cell(dash, 0, 16, "Trail active",
-         text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 16,
-         (in_long or in_short) ?
-             (trail_active_l or trail_active_s ? "YES" : "NO") : "–",
-         text_color = trail_active_l or trail_active_s ? color.lime : color.gray,
-         text_size=size.small, text_halign=text.align_center)
-    table.cell(dash, 2, 16,
-         in_long  and trail_active_l ?
-             "@ " + str.tostring(math.round(trail_sl_long,  2)) :
-         in_short and trail_active_s ?
-             "@ " + str.tostring(math.round(trail_sl_short, 2)) : "–",
-         text_color=color.new(color.orange, 10), text_size=size.tiny)
+        table.cell(dash, 0, 16, "Trail active",
+             text_color=color.new(color.gray, 20), text_size=size.small)
+        table.cell(dash, 1, 16,
+             (in_long or in_short) ?
+                 (trail_active_l or trail_active_s ? "YES" : "NO") : "–",
+             text_color = trail_active_l or trail_active_s ? color.lime : color.gray,
+             text_size=size.small, text_halign=text.align_center)
+        table.cell(dash, 2, 16,
+             in_long  and trail_active_l ?
+                 "@ " + str.tostring(math.round(trail_sl_long,  2)) :
+             in_short and trail_active_s ?
+                 "@ " + str.tostring(math.round(trail_sl_short, 2)) : "–",
+             text_color=color.new(color.orange, 10), text_size=size.tiny)
 
-    table.cell(dash, 0, 17, "Mesh bars",
-         text_color=color.new(color.gray, 20), text_size=size.small)
-    table.cell(dash, 1, 17, str.tostring(mesh_bars),
-         text_color = green_mesh ? color.lime : color.red,
-         text_size=size.small, text_halign=text.align_center)
-    table.cell(dash, 2, 17,
-         green_mesh ? "Green since " + str.tostring(mesh_bars) + "b" :
-                      "Red since "   + str.tostring(mesh_bars) + "b",
-         text_color=color.new(color.gray, 30), text_size=size.tiny)
+        table.cell(dash, 0, 17, "Mesh bars",
+             text_color=color.new(color.gray, 20), text_size=size.small)
+        table.cell(dash, 1, 17, str.tostring(mesh_bars),
+             text_color = green_mesh ? color.lime : color.red,
+             text_size=size.small, text_halign=text.align_center)
+        table.cell(dash, 2, 17,
+             green_mesh ? "Green since " + str.tostring(mesh_bars) + "b" :
+                          "Red since "   + str.tostring(mesh_bars) + "b",
+             text_color=color.new(color.gray, 30), text_size=size.tiny)
