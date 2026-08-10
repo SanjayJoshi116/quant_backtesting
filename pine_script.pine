@@ -47,7 +47,15 @@ trail_atr    = input.float(1.0, "Trail activates (ATR×)", group=grp_risk, step=
 trail_offset = input.float(1.5, "Trail offset  (ATR×)",   group=grp_risk, step=0.1)
 
 grp_disp = "Display"
-compact  = input.bool(true, "Compact dashboard (fits short panes)", group=grp_disp)
+compact     = input.bool(true,  "Compact dashboard (fits short panes)", group=grp_disp)
+show_marks  = input.bool(true,  "Entry / exit labels",                  group=grp_disp)
+label_full  = input.bool(false, "Verbose labels (price + score)",       group=grp_disp)
+show_zones  = input.bool(false, "Shade risk / reward zones",            group=grp_disp)
+show_bg     = input.bool(false, "Tint background while in a trade",     group=grp_disp)
+// NOTE: TradingView draws its OWN entry/exit arrows and the "-5 TP" quantity
+// tags from the strategy engine. Pine cannot suppress those. Turn them off in
+// Strategy Settings -> Properties -> uncheck "Signal labels" / "Trades on
+// chart", otherwise they stack on top of the labels below.
 
 grp_entry = "Entry Settings"
 use_pb    = input.bool(true,   "Enable Pullback entries",  group=grp_entry)
@@ -238,6 +246,11 @@ if not in_short and not sell_signal
 show_long  = buy_signal  and (not in_long  or signal_score   > _open_long_score)
 show_short = sell_signal and (not in_short or signal_score_s > _open_short_score)
 
+// Setup name, defined here because strategy.entry() below uses it as its order
+// comment and Pine requires declaration before use.
+long_type  = pullback_long  ? "PB-L" : base_bo_long ? "BASE-BO" : "BO-L"
+short_type = pullback_short ? "PB-S" : "BO-S"
+
 // Track score of current open trade
 if show_long
     _open_long_score  := signal_score
@@ -290,11 +303,11 @@ if in_long
     sl_price = entry_price - atr * sl_mult
     tp_price = entry_price + atr * tp_mult_long
     if mesh_breaks_red
-        strategy.close("Long", comment="Mesh Break")
+        strategy.close("Long", comment="Mesh")
         exit_why := "MESH"
         exit_px  := close
     else if use_trail and trail_active_l and low <= trail_sl_long
-        strategy.close("Long", comment="Trail Stop")
+        strategy.close("Long", comment="Trail")
         exit_why := "TRAIL"
         exit_px  := trail_sl_long
     else if low <= sl_price
@@ -313,11 +326,11 @@ if in_short
     sl_price = entry_price + atr * sl_mult
     tp_price = entry_price - atr * tp_short
     if mesh_breaks_green
-        strategy.close("Short", comment="Mesh Break")
+        strategy.close("Short", comment="Mesh")
         exit_why := "MESH"
         exit_px  := close
     else if use_trail and trail_active_s and high >= trail_sl_short
-        strategy.close("Short", comment="Trail Stop")
+        strategy.close("Short", comment="Trail")
         exit_why := "TRAIL"
         exit_px  := trail_sl_short
     else if high >= sl_price
@@ -334,11 +347,11 @@ if in_short
 // ─── ENTRIES (unchanged) ──────────────────────────────────────────────────────
 if show_long
     strategy.entry("Long", strategy.long,
-         comment = "LONG " + (pullback_long ? "PB-L" : base_bo_long ? "BASE-BO" : "BO-L"))
+         comment = long_type)
 
 if show_short
     strategy.entry("Short", strategy.short,
-         comment = "SHORT " + (pullback_short ? "PB-S" : "BO-S"))
+         comment = short_type)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // PRO UI LAYER — all visual additions below, zero logic change above
@@ -357,7 +370,9 @@ fill(e21_plot, e50_plot,
      title = "EMA Mesh")
 
 // ─── BACKGROUND TINT WHEN IN TRADE ───────────────────────────────────────────
-bgcolor(in_long  ? color.new(color.green, 93) : in_short ? color.new(color.red,   93) : na, title="Trade Background")
+bgcolor(not show_bg ? na :
+        in_long  ? color.new(color.green, 95) :
+        in_short ? color.new(color.red,   95) : na, title="Trade Background")
 
 // ─── EMA STRUCTURE LABELS ─────────────────────────────────────────────────────
 // These appear when EMA21 crosses EMA50 — shows structure change, NOT a trade.
@@ -382,40 +397,49 @@ plotshape(mesh_breaks_red, "EMA 21 < 50",
 // LONG  ▲ = green triangle at bottom — entry point to BUY
 // SHORT ▼ = red triangle at top    — entry point to SELL SHORT
 // Label shows: LONG/SHORT | price | score | signal type (PB-L, BO-L etc.)
-long_label  = "LONG" +
-              " | ₹" + str.tostring(math.round(close, 2)) +
-              " | Score " + str.tostring(signal_score) + "/7" +
-              " | " + (pullback_long ? "PB-L" : base_bo_long ? "BASE-BO" : "BO-L")
+// show_long stays true while a position is open whenever a higher-scoring
+// signal appears (that is what re-arms the entry). Marking every one of those
+// stacks three or four labels over the same trade. Only the bar that actually
+// OPENS a position gets a mark.
+fresh_long  = show_long  and not in_long
+fresh_short = show_short and not in_short
 
-short_label = "SHORT" +
-              " | ₹" + str.tostring(math.round(close, 2)) +
-              " | Score " + str.tostring(signal_score_s) + "/6" +
-              " | " + (pullback_short ? "PB-S" : "BO-S")
+// Compact by default: the setup type and score are what you act on. The price
+// is already on the axis and the % is on the exit label.
 
-plotshape(show_long,  "LONG Entry",
+long_label  = label_full ?
+     "LONG  ₹" + str.tostring(math.round(close, 2)) +
+     "  " + str.tostring(signal_score) + "/7  " + long_type :
+     long_type + "  " + str.tostring(signal_score) + "/7"
+
+short_label = label_full ?
+     "SHORT  ₹" + str.tostring(math.round(close, 2)) +
+     "  " + str.tostring(signal_score_s) + "/6  " + short_type :
+     short_type + "  " + str.tostring(signal_score_s) + "/6"
+
+plotshape(fresh_long,  "LONG Entry",
           shape.triangleup, location.belowbar,
-          color.new(color.lime, 0), text="", size=size.small)
+          color.new(color.lime, 0), text="", size=size.tiny)
 
-plotshape(show_short, "SHORT Entry",
+plotshape(fresh_short, "SHORT Entry",
           shape.triangledown, location.abovebar,
-          color.new(color.red, 0), text="", size=size.small)
+          color.new(color.red, 0), text="", size=size.tiny)
 
-// Entry labels — only show when score filter passes (no clutter)
-if show_long
-    label.new(bar_index, low - atr * 0.3,
+if show_marks and fresh_long
+    label.new(bar_index, low - atr * 0.4,
          text=long_label,
-         color=color.new(color.green, 15),
+         color=color.new(color.green, 25),
          textcolor=color.white,
          style=label.style_label_up,
-         size=size.small)
+         size=size.tiny)
 
-if show_short
-    label.new(bar_index, high + atr * 0.3,
+if show_marks and fresh_short
+    label.new(bar_index, high + atr * 0.4,
          text=short_label,
-         color=color.new(color.red, 15),
+         color=color.new(color.red, 25),
          textcolor=color.white,
          style=label.style_label_down,
-         size=size.small)
+         size=size.tiny)
 
 // ─── TRADE ZONES: where you get out, drawn while you are still in ────────────
 // Three lines plus two shaded bands. The green band is everything between your
@@ -435,8 +459,10 @@ p_sl    = plot(lvl_sl,    "Stop",   color.new(color.red,    0),
 p_tp    = plot(lvl_tp,    "Target", color.new(color.green,  0),
                style=plot.style_linebr, linewidth=2)
 
-fill(p_entry, p_tp, color.new(color.green, 88), title="Reward zone")
-fill(p_entry, p_sl, color.new(color.red,   88), title="Risk zone")
+// Off by default — the shaded bands read well on a single trade and turn into
+// noise on a chart with twenty of them.
+fill(p_entry, p_tp, show_zones ? color.new(color.green, 90) : na, title="Reward zone")
+fill(p_entry, p_sl, show_zones ? color.new(color.red,   90) : na, title="Risk zone")
 
 plot(use_trail and in_long  and trail_active_l ? trail_sl_long  : na, "Trail Long",
      color.new(color.orange, 0), style=plot.style_linebr, linewidth=2)
@@ -447,7 +473,7 @@ plot(use_trail and in_short and trail_active_s ? trail_sl_short : na, "Trail Sho
 // tracing the line across to the axis.
 var label tag_sl = na
 var label tag_tp = na
-if barstate.islast
+if barstate.islast and show_marks
     label.delete(tag_sl)
     label.delete(tag_tp)
     if in_long or in_short
@@ -466,16 +492,17 @@ if barstate.islast
 // Coloured by OUTCOME, not by reason: green label = you made money on this
 // trade, red = you lost. The reason and the P&L are both on the label, so a
 // closed trade reads without opening the strategy tester.
-if exit_why != ""
+if show_marks and exit_why != ""
     won = exit_pnl > 0
     label.new(bar_index, exit_was_lg ? high + atr * 0.4 : low - atr * 0.4,
-         text = "EXIT " + exit_why + "  ₹" + str.tostring(math.round(exit_px, 2)) +
-                "  " + (exit_pnl >= 0 ? "+" : "") +
-                str.tostring(math.round(exit_pnl, 2)) + "%",
-         color     = won ? color.new(color.teal, 10) : color.new(color.maroon, 10),
+         text = label_full ?
+              exit_why + "  ₹" + str.tostring(math.round(exit_px, 2)) + "  " +
+              (exit_pnl >= 0 ? "+" : "") + str.tostring(math.round(exit_pnl, 1)) + "%" :
+              (exit_pnl >= 0 ? "+" : "") + str.tostring(math.round(exit_pnl, 1)) + "%",
+         color     = won ? color.new(color.teal, 20) : color.new(color.maroon, 20),
          textcolor = color.white,
          style     = exit_was_lg ? label.style_label_down : label.style_label_up,
-         size      = size.small)
+         size      = size.tiny)
 
 plotshape(exit_why != "" and exit_was_lg,  "Exit Long",
           shape.xcross, location.abovebar, color.new(color.white, 0), size=size.tiny)
