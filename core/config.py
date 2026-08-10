@@ -61,13 +61,48 @@ class StrategyConfig(BaseModel):
     risk_per_trade_pct: float = Field(gt=0,  le=100, default=1.0)
     max_position_pct:   float = Field(gt=0,  le=100, default=20.0)
 
+    # ── Portfolio constraints (core/portfolio.py) ─────────────────────────────
+    max_positions:  int   = Field(gt=0, default=15)
+    max_gross_pct:  float = Field(gt=0, default=100.0)
+
     # ── Market regime filter ──────────────────────────────────────────────────
     regime_enabled:    bool = True
     nifty_ema_period:  int  = Field(gt=0, default=200)
 
+    # ── Indicator windows ─────────────────────────────────────────────────────
+    # Formerly hardcoded in indicators.py and never searched. prepare_indicators()
+    # reads these when its arguments are left at None.
+    ema_fast:       int   = Field(gt=0, default=21)
+    ema_slow:       int   = Field(gt=0, default=50)
+    ema_long:       int   = Field(gt=0, default=200)
+    rsi_window:     int   = Field(gt=0, default=14)
+    adx_window:     int   = Field(gt=0, default=14)
+    atr_window:     int   = Field(gt=0, default=14)
+    vol_sma:        int   = Field(gt=0, default=20)
+    slope_lookback: int   = Field(gt=0, default=5)
+    hh_window:      int   = Field(gt=0, default=12)
+    ll_window:      int   = Field(gt=0, default=12)
+    ll50_window:    int   = Field(gt=0, default=50)
+    candle_frac:    float = Field(gt=0, le=1, default=0.50)
+    bo_close_frac:  float = Field(gt=0, le=1, default=0.96)
+
+    # ── Breadth gate ──────────────────────────────────────────────────────────
+    # Suppress named signal types when the % of the universe in an uptrend falls
+    # below breadth_min_pct. Targets breakouts, which fail in narrow markets.
+    breadth_gate_enabled:  bool      = False
+    breadth_min_pct:       float     = Field(ge=0, le=100, default=20.0)
+    breadth_gated_signals: list[str] = Field(default_factory=lambda: ["BO-L"])
+
     # ── Execution costs ───────────────────────────────────────────────────────
     commission_pct: float = Field(ge=0, default=0.0005)
     slippage_pct:   float = Field(ge=0, default=0.0005)
+
+    # ── ML signal filter ──────────────────────────────────────────────────────
+    # Gate is regime-conditional: the filter helps in bad regimes and costs
+    # money in bull runs, so the bear threshold is the stricter of the two.
+    ml_enabled:        bool  = False
+    ml_min_score:      float = Field(ge=0, le=1, default=0.50)
+    ml_min_score_bear: float = Field(ge=0, le=1, default=0.53)
 
     # ── Versioning ────────────────────────────────────────────────────────────
     config_version: str = "unknown"
@@ -109,6 +144,12 @@ class StrategyConfig(BaseModel):
             "pb_short_tol":   self.pb_short_tol,
             "di_gap_min":     self.di_gap_min,
             "min_room_atr":   self.min_room_atr,
+            "breadth_gate_enabled":  self.breadth_gate_enabled,
+            "breadth_min_pct":       self.breadth_min_pct,
+            "breadth_gated_signals": self.breadth_gated_signals,
+            "ml_enabled":        self.ml_enabled,
+            "ml_min_score":      self.ml_min_score,
+            "ml_min_score_bear": self.ml_min_score_bear,
         }
 
 
@@ -132,7 +173,8 @@ def load_config(path: Path | None = None) -> StrategyConfig:
 
     # Flatten nested YAML sections into a single dict
     flat: dict = {}
-    for section in ("exit", "filters", "entry", "data", "regime", "sizing", "costs"):
+    for section in ("exit", "filters", "entry", "data", "regime", "breadth",
+                    "indicators", "sizing", "costs", "ml"):
         flat.update(raw.get(section, {}))
 
     # Top-level keys (not nested under any section)

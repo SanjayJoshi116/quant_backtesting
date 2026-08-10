@@ -155,6 +155,11 @@ def detect(df_raw: pd.DataFrame, ticker: str, params: dict = None) -> list[dict]
                                short=True))
 
 
+    # ML gate. Off by default, so screener behaviour is unchanged until enabled.
+    # Every signal still carries "ml_score" for display either way.
+    if p.get("ml_enabled", False):
+        signals = [s for s in signals if s.get("ml_pass", True)]
+
     return signals
 
 
@@ -224,7 +229,7 @@ def _build(ticker, sig_type, c, atr, rsi, adx, v, vsma,
              (df["Low"].iloc[-200:] <= lvl + tol)).sum()
         )
 
-    return {
+    sig = {
         "ticker":         ticker,
         "signal_type":    sig_type,
         "label":          SIGNAL_META[sig_type]["label"],
@@ -252,3 +257,22 @@ def _build(ticker, sig_type, c, atr, rsi, adx, v, vsma,
         "sr_test_count":      sr_test_count,
         "intraday_move_pct":  intraday_move_pct,
     }
+
+    # ── ML score ─────────────────────────────────────────────────────────────
+    # Always attached for visibility (screener shows it); only used to suppress
+    # the signal when ml_enabled is on. Returns 0.5 if no model is trained.
+    try:
+        from core.ml.xgb_scorer import score_signal
+        sig["ml_score"] = score_signal(sig)
+    except Exception as e:
+        import warnings
+        warnings.warn(f"ML scoring failed for {ticker}: {e}")
+        sig["ml_score"] = 0.5
+
+    if p.get("ml_enabled", False):
+        thr = float(p.get("ml_min_score", 0.50))
+        sig["ml_pass"] = sig["ml_score"] >= thr
+    else:
+        sig["ml_pass"] = True
+
+    return sig

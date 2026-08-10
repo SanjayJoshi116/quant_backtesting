@@ -5,7 +5,7 @@
 # Active values = WFO-optimised (walk-forward 2016-2020 IS, 2021-2026 OOS).
 # Default/baseline values shown in comments for reference.
 
-config_version: "1.3"
+config_version: "1.5"
 
 # ── Exit / Risk management ────────────────────────────────────────────────────
 exit:
@@ -54,6 +54,55 @@ regime:
   #                           as an informational warning, not a hard block.
   nifty_ema_period:  200
 
+# ── Indicator windows ─────────────────────────────────────────────────────────
+# These were hardcoded in indicators.py and had NEVER been searched. Measured
+# with the portfolio objective (Rs 1L, 15 positions, >=Rs 25cr/day, 0.20% costs):
+#
+#   bo_close_frac  IS Sharpe  OOS Sharpe  OOS CAGR  OOS maxDD
+#         0.96        0.86        1.09      15.75%    -18.4%   <- old hardcoded
+#         0.99        1.17        1.22      17.73%    -16.2%   <- best OOS
+#         0.995       1.36        1.20      15.86%    -10.6%   <- best IS
+#
+# 0.99 requires a breakout candle to close within 1% of its high instead of 4%.
+# It cuts signals ~40% but funded trades barely move — with only 15 slots you
+# were never taking the marginal signal anyway, so the quality gain is ~free.
+#
+# hh_window was flat across 8/12/16/20 (Sharpe 1.18-1.25 at bo=0.99), so the
+# breakout lookback matters far less than the candle-close filter. Left at 12.
+#
+# Caveat: single IS/OOS split, and OOS was non-monotone (0.985 scored 0.90).
+# Treat 0.99 as a good estimate, not a precise optimum.
+indicators:
+  ema_fast:       21
+  ema_slow:       50
+  ema_long:       200
+  rsi_window:     14
+  adx_window:     14
+  atr_window:     14
+  vol_sma:        20
+  slope_lookback: 5
+  hh_window:      12
+  ll_window:      12
+  ll50_window:    50
+  candle_frac:    0.50
+  bo_close_frac:  0.96    # set 0.99 to adopt the measured improvement
+
+# ── Breadth gate ──────────────────────────────────────────────────────────────
+# Breakouts fail in narrow markets. Measured across the three low-breadth years:
+#   2018 (breadth 15.6%)  BO-L -216.6   PB-L  -38.2
+#   2019 (breadth 12.5%)  BO-L  -39.2   PB-L   -2.9
+#   2025 (breadth 15.4%)  BO-L -122.2   PB-L  +19.0
+# BO-L lost money in all three; PB-L was roughly flat. So below the threshold we
+# suppress breakouts and keep pullbacks, rather than blocking everything the way
+# the (rejected) Nifty EMA200 regime filter did.
+#
+# Caveat: only 3 low-breadth years, and 2022 (mid-breadth) inverts the pattern.
+# Treat as a tested hypothesis, not a law. Off by default.
+breadth:
+  breadth_gate_enabled: true
+  breadth_min_pct:      20.0        # % of universe in bull_trend
+  breadth_gated_signals: ["BO-L"]   # suppressed when breadth < breadth_min_pct
+
 # ── Data / caching ────────────────────────────────────────────────────────────
 data:
   period:          "2y"  # yfinance download period (needs ≥ 250 bars for indicators)
@@ -68,7 +117,29 @@ sizing:
   risk_per_trade_pct: 1.5     # % of equity risked per trade (was 2.0 in v1.0)
   max_position_pct:   20.0    # hard cap: never deploy more than this % in one trade
 
+  # ── Portfolio constraints (core/portfolio.py) ───────────────────────────────
+  # The per-ticker backtester has NO portfolio limit — pooling its results
+  # implies ~209 concurrent positions and ~4060% of equity deployed on average.
+  # These caps make a single-account replay realistic.
+  max_positions:  15          # max concurrent open positions across the book
+  max_gross_pct:  100.0       # max total deployed capital as % of equity (no leverage)
+
 # ── Execution costs (informational — used by backtester) ─────────────────────
 costs:
   commission_pct: 0.0005   # 0.05% per side
   slippage_pct:   0.0005   # 0.05% per side
+
+# ── ML signal filter ──────────────────────────────────────────────────────────
+# XGBoost P(win) gate. Train with `python -m core.ml.xgb_scorer`.
+#
+# MEASURED (train on entries < 2025-09-09, test on entries after — true OOS):
+#   AUC 0.578. Keeping the top 30% of signals turned that window from
+#   -159 to +28 equity-%, win rate 28.6% -> 35.4%.
+# But over the FULL 10y period the same filter roughly HALVES total profit,
+# because in bull years it skips winners. The edge is regime-conditional, so
+# the bear-regime gate is stricter than the normal one rather than being a
+# single fixed threshold.
+ml:
+  ml_enabled:        false   # off by default — flip on only after retraining
+  ml_min_score:      0.50    # min P(win) to take a signal in a normal regime
+  ml_min_score_bear: 0.53    # stricter gate when Nifty is below its EMA

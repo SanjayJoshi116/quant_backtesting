@@ -4,7 +4,7 @@
 
 Three-tier quantitative trading system for NSE (Indian equities):
 
-1. **Backtester** (`main.py` + `backtester.py`) — validates strategy on 10 years of daily OHLCV across 185+ stocks
+1. **Backtester** (`main.py` + `backtester.py`) — validates strategy on 10 years of daily OHLCV across 869 stocks
 2. **Live screener** (`bot/`) — scans 2,258 NSE stocks each morning, emails actionable signals
 3. **Dashboard** (`dashboard.py`) — Streamlit UI for signals, scorecard, patterns, fundamentals
 
@@ -50,13 +50,15 @@ Three-tier quantitative trading system for NSE (Indian equities):
 | Paper trading | `core/paper_trader.py` |
 | Walk-forward optimisation | `optimization.py` |
 | Monte Carlo simulation | `montecarlo.py` |
+| Portfolio replay (capital limit, liquidity) | `core/portfolio.py`, `tools/run_portfolio.py` |
+| Full parameter inventory | `docs/PARAMETERS.md` |
 
 ## Data
 
 - Source: Yahoo Finance via `yfinance`, tickers use `.NS` suffix (e.g. `WIPRO.NS`)
 - Daily OHLCV cache: `data/raw/` (auto-created)
 - Fundamental cache: `data/fundamentals/` JSON per ticker, refreshed every 90 days
-- Backtest universe: 185 NSE stocks defined in `data.py`, grouped by sector
+- Backtest universe: 869 NSE stocks defined in `data.py`, grouped by sector
 - Screener universe: 2,258 stocks from `stocks_list.csv`
 
 ## Email alerts
@@ -76,12 +78,36 @@ Copy `.env.example` → `.env` and fill in values.
 pytest tests/                  # unit tests (config, data, logging, signals)
 python test_fundamental.py     # fundamental scorer integration test
 python main.py                 # full backtest = integration test for the engine
-G:\Anaconda\envs\stock\Scripts\ruff.exe check .   # linting (zero errors expected)
+python tools/run_portfolio.py  # portfolio replay with a real capital limit
+ruff check .                   # linting (pip install ruff; zero errors expected)
 ```
+
+## Known measurement traps
+
+- **Per-ticker backtest ≠ a real account.** `backtester.py` runs one ticker at a
+  time with no portfolio limit. Pooling per-ticker results implies ~115
+  concurrent positions and ~2,237% of equity deployed. Any figure describing a
+  real account must come from `core/portfolio.py`.
+- **Trade-based Sharpe is inflated.** `analysis.py` annualises by
+  `sqrt(trades_per_year)`, which is only valid for sequential non-overlapping
+  trades. With overlapping correlated positions it overstates Sharpe by roughly
+  `sqrt(concurrent positions)`. Realistic portfolio Sharpe is ~1.0-1.3.
+- **`results/trades_OOS_best.csv` is not a per-ticker file.** It is the
+  optimiser's aggregate under a *different* parameter set, and ~56% of its rows
+  duplicate trades in the per-ticker CSVs. Exclude it when globbing
+  `trades_*.csv` (`core/ml/feature_builder.py` does).
+- **Slippage of 0.05%/side is optimistic** for the illiquid tail of the universe.
+  The edge disappears near 1% round-trip. Check with `tools/liquidity_screen.py`.
+- **Ranking trades by an in-sample model is lookahead.** Use
+  `walk_forward_scores()` from `core/ml/xgb_scorer.py`, never the production
+  model's own scores, when a score decides which trades to take.
 
 ## What NOT to do
 
-- Don't commit `.env` (contains Gmail credentials)
+- Don't commit `.env` (contains Gmail credentials). It was tracked and pushed
+  once already because `.gitignore` had an **inline comment** on the `.env` line
+  — `#` only starts a comment at the START of a line, so the pattern matched
+  nothing. Never put trailing comments on a `.gitignore` pattern.
 - Don't hardcode RSI/ADX/ATR values in Python — use `config/strategy.yaml`
 - Don't add lookahead bias to indicators (no future data, no `.shift(-n)`)
 - Don't call `yfinance` directly in new code — go through `core/data.py`

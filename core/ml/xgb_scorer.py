@@ -139,6 +139,48 @@ def walk_forward_validate(features: pd.DataFrame,
     return {"folds": fold_results, "avg": avg}
 
 
+# ── Walk-forward out-of-sample scores ─────────────────────────────────────────
+
+def walk_forward_scores(features: pd.DataFrame,
+                        n_folds: int = 10,
+                        min_train: int = 500) -> pd.Series:
+    """
+    Score every trade with a model that never saw it — expanding window.
+
+    Fold k trains on everything before it and predicts only that fold, so each
+    score depends solely on trades that had already closed. Use this (never the
+    production model's in-sample scores) whenever the score decides which trades
+    to TAKE in a backtest: ranking by a model fitted on the outcomes being ranked
+    turns a filter into a lookahead oracle.
+
+    Returns a Series aligned to `features.index`; NaN where the trade fell in the
+    first fold and had no training history.
+    """
+    f = features.sort_values("entry_date")
+    n = len(f)
+    out = pd.Series(np.nan, index=f.index, dtype=float)
+    fold_size = max(n // (n_folds + 1), 1)
+
+    for k in range(1, n_folds + 1):
+        tr_end = fold_size * k
+        te_end = min(tr_end + fold_size, n)
+        if tr_end < min_train or te_end <= tr_end:
+            continue
+        tr, te = f.iloc[:tr_end], f.iloc[tr_end:te_end]
+
+        X_tr = tr[FEATURE_COLS].values.astype(np.float32)
+        y_tr = tr["win"].values
+        if len(np.unique(y_tr)) < 2:
+            continue
+        pw = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
+        m = _make_model(pw)
+        m.fit(X_tr, y_tr, verbose=False)
+        out.loc[te.index] = m.predict_proba(
+            te[FEATURE_COLS].values.astype(np.float32))[:, 1]
+
+    return out.reindex(features.index)
+
+
 # ── Feature importance ────────────────────────────────────────────────────────
 
 def show_feature_importance(model: xgb.XGBClassifier) -> None:
@@ -188,10 +230,14 @@ def score_signal(sig: dict) -> float:
             with open(THRESH_PATH) as _f:
                 _cached_threshold = json.load(_f).get("threshold", 0.55)
 
-    enc = {"PB-L": 0, "BO-L": 1, "BASE-BO": 2, "PB-S": 4, "BO-S": 5}
+    enc = {"PB-L": 0, "BO-L": 1, "BASE-BO": 2, "PB50-L": 3, "PB-S": 4, "BO-S": 5}
+    # Callers disagree on case ("long" in the backtester, "LONG" in the screener),
+    # so normalise rather than trusting the caller — a mismatch here silently
+    # encodes every long as a short.
+    _dir = str(sig.get("direction", "LONG")).strip().upper()
     row = np.array([[
         enc.get(sig.get("signal_type", ""), 1),
-        1 if sig.get("direction", "LONG") == "LONG" else 0,
+        1 if _dir == "LONG" else 0,
         sig.get("rsi", 50.0),
         sig.get("adx", 20.0),
         sig.get("vol_ratio", 1.0),
@@ -239,10 +285,23 @@ def measure_sharpe_impact(features: pd.DataFrame,
     probs = model.predict_proba(X_te)[:, 1]
     mask  = probs >= threshold
 
-    def _sharpe(pnl: np.ndarray, ann: float = 252.0) -> float:
-        if len(pnl) < 5 or pnl.std() == 0:
+    # Trade-based annualised Sharpe: mean/std * sqrt(trades per year).
+    # The previous form used sqrt(252 / n_trades), which made Sharpe FALL as
+    # trade count rose and handed the filtered set a mechanical advantage purely
+    # for taking fewer trades.
+    #
+    # CAVEAT: this still treats trades as sequential and independent. They are
+    # neither — the book runs ~209 concurrent, heavily correlated positions — so
+    # this number is an upper bound on the real portfolio Sharpe, not an
+    # estimate of it. A daily portfolio equity curve is the honest way.
+    span_days = (pd.to_datetime(test["entry_date"]).max()
+                 - pd.to_datetime(test["entry_date"]).min()).days
+    years = max(span_days / 365.25, 0.1)
+
+    def _sharpe(pnl: np.ndarray) -> float:
+        if len(pnl) < 5 or pnl.std(ddof=1) == 0:
             return 0.0
-        return float(pnl.mean() / pnl.std() * np.sqrt(ann / max(len(pnl), 1)))
+        return float(pnl.mean() / pnl.std(ddof=1) * np.sqrt(len(pnl) / years))
 
     pnl_all  = test["pnl_on_equity"].values
     pnl_filt = test["pnl_on_equity"].values[mask]

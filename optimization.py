@@ -1,22 +1,46 @@
 """
-optimization.py — Walk-forward optimization and sensitivity analysis.
+optimization.py — Walk-forward optimisation and sensitivity analysis.
 
-In-sample  : 2019-01-01 → 2022-12-31
-Out-of-sample: 2023-01-01 → 2026-04-30
+Objective: PORTFOLIO Sharpe from a daily mark-to-market equity curve of a single
+Rs 1,00,000 account with a real capital limit and a liquidity floor.
 
-Grid search maximises annualised Sharpe ratio on IS data.
-Reports top-5 parameter sets and runs the best on OOS.
-Flags overfitting if OOS Sharpe < 60 % of IS Sharpe.
+Why not trade-based Sharpe (the previous objective)
+---------------------------------------------------
+The old scorer was `mean(pnl_pct)/std * sqrt(n_trades / years)` over all tickers
+pooled. Three defects, all of which biased the search:
+
+  1. TRADE-COUNT BIAS. `n_trades` counted parallel positions across 869 tickers
+     as if they were sequential. Two parameter sets with identical per-trade
+     quality scored differently purely on how many trades they fired — 4x the
+     trades bought a 2x higher "Sharpe" for free. The optimiser was structurally
+     rewarded for loosening filters.
+  2. WRONG QUANTITY. It used `pnl_pct` (return on position) rather than
+     `pnl_on_equity`, so position sizing was invisible.
+  3. UNAFFORDABLE TRADES. No portfolio constraint and no liquidity floor, so it
+     tuned for an account holding ~115 concurrent positions at ~2237% of equity,
+     in stocks that cannot absorb the order.
+
+Every candidate is now scored on money a real account could have made.
+Expect the resulting numbers to be LOWER than the old ones. That is the point.
+
+Also here:
+  - expected_max_sharpe(): the multiple-testing haircut. With N trials the best
+    result is partly luck; this is the bar a winner must clear.
+  - rolling_walk_forward(): several independent OOS windows, not one split.
+  - sensitivity_analysis(): prefer broad plateaus over narrow spikes.
 """
 
 import itertools
+
 import numpy as np
 import pandas as pd
+from scipy.stats import norm
 from tqdm import tqdm
 
+from analysis import compute_metrics
 from backtester import run_backtest
 from core.config import load_config
-from analysis  import compute_metrics
+from core.portfolio import attach_turnover, simulate_portfolio
 
 # ── Date splits ───────────────────────────────────────────────────────────────
 IS_START  = "2016-01-01"
@@ -24,180 +48,298 @@ IS_END    = "2020-12-31"
 OOS_START = "2021-01-01"
 OOS_END   = "2026-04-30"
 
+# ── Portfolio settings used to SCORE every candidate ──────────────────────────
+# These are held fixed during the search — they define the account we are
+# optimising for, not parameters being optimised.
+OPT_CAPITAL      = 100_000.0
+OPT_MAX_POS      = 15
+OPT_POS_PCT      = 6.5
+OPT_MIN_TURNOVER = 25e7          # Rs 25 crore/day median — tradeable names only
+OPT_COST         = 0.0020        # round-trip; realistic at this liquidity tier
+
 # ── Parameter grid ────────────────────────────────────────────────────────────
+# Keep this SMALL. 3^7 = 2,187 combinations was the old grid; at that many trials
+# the winner is mostly luck (see expected_max_sharpe). Two or three parameters at
+# a time, coarse steps.
 PARAM_GRID = {
-    "sl_mult":       [1.5, 2.0, 2.5],
-    "tp_mult_long":  [2.5, 3.0, 3.5],
-    "adx_long":      [12,  15,  18 ],
-    "adx_short":     [20,  25,  30 ],
-    "rsi_pb_lo":     [35,  38,  42 ],
-    "rsi_pb_hi":     [58,  62,  65 ],
-    "vol_mult_long": [1.0, 1.05,1.1],
+    "sl_mult":      [1.5, 2.0, 2.5],
+    "tp_mult_long": [2.5, 3.0, 3.5],
+    "adx_long":     [15, 18, 21],
 }
 
-OVERFIT_THRESHOLD = 0.60   # OOS Sharpe / IS Sharpe must exceed this
+OVERFIT_THRESHOLD = 0.60   # OOS / IS Sharpe must exceed this
 
 
-# ── Helper: run all tickers for one param set ─────────────────────────────────
-def _run_combo(ind_dfs: dict, params: dict,
-               start: str, end: str) -> dict:
-    """Run backtester for all tickers over a date window with given params."""
-    all_pnl: list[float] = []
+# ── Multiple-testing haircut ──────────────────────────────────────────────────
+
+def expected_max_sharpe(n_trials: int, sharpe_std: float) -> float:
+    """
+    Expected best Sharpe from `n_trials` searches when NO strategy has any edge.
+
+    Standard result for the maximum of N iid normals (Bailey & Lopez de Prado).
+    If your best grid result does not clear this, you found noise.
+    """
+    if n_trials < 2 or sharpe_std <= 0:
+        return 0.0
+    g = 0.5772156649  # Euler-Mascheroni
+    z1 = norm.ppf(1.0 - 1.0 / n_trials)
+    z2 = norm.ppf(1.0 - 1.0 / (n_trials * np.e))
+    return float(sharpe_std * ((1.0 - g) * z1 + g * z2))
+
+
+# ── Scoring one parameter set ─────────────────────────────────────────────────
+
+_BREADTH_CACHE: dict[int, "pd.Series"] = {}
+
+
+def _breadth_for(ind_dfs: dict) -> "pd.Series":
+    """
+    Universe breadth for this ind_dfs, computed once per search.
+
+    It is cross-sectional over the whole universe and independent of any strategy
+    parameter, so recomputing it per combo would be pure waste.
+    """
+    key = id(ind_dfs)
+    if key not in _BREADTH_CACHE:
+        from analysis import compute_universe_breadth
+        _BREADTH_CACHE[key] = compute_universe_breadth(ind_dfs)
+    return _BREADTH_CACHE[key]
+
+
+def _run_combo(ind_dfs: dict, params: dict, start: str, end: str) -> dict:
+    """
+    Backtest every ticker with `params`, then replay the trades against ONE
+    account with a capital limit and liquidity floor. Returns portfolio metrics.
+    """
+    br = _breadth_for(ind_dfs) if params.get("breadth_gate_enabled") else None
+
+    rows: list[dict] = []
     for ticker, df in ind_dfs.items():
         sub = df.loc[start:end]
         if len(sub) < 50:
             continue
-        trades = run_backtest(sub, params=params, ticker=ticker)
-        all_pnl.extend(t["pnl_pct"] for t in trades)
+        rows.extend(run_backtest(sub, params=params, ticker=ticker, breadth=br))
 
-    if len(all_pnl) < 5:
-        return {"sharpe": -999.0, "n_trades": 0}
+    if len(rows) < 5:
+        return {"sharpe": -999.0, "cagr": -999.0, "n_trades": 0, "n_taken": 0}
 
-    pnl = np.array(all_pnl)
-    n   = len(pnl)
-    std = pnl.std(ddof=1)
-    if std == 0:
-        return {"sharpe": 0.0, "n_trades": n}
+    t = pd.DataFrame(rows)
+    if OPT_MIN_TURNOVER > 0:
+        t = attach_turnover(t, window=60)
+        t = t[t.turnover >= OPT_MIN_TURNOVER]
+    if len(t) < 5:
+        return {"sharpe": -999.0, "cagr": -999.0, "n_trades": len(rows), "n_taken": 0}
 
-    # Estimate annualisation: assume ~252 trading days, IS window ~4 years
     try:
-        years          = max((pd.Timestamp(end) - pd.Timestamp(start)).days / 365.25, 0.1)
-        tpy            = n / years
-    except Exception:
-        tpy = 12.0
-    sharpe = (pnl.mean() / std) * np.sqrt(tpy)
+        res = simulate_portfolio(
+            t, max_positions=OPT_MAX_POS, max_position_pct=OPT_POS_PCT,
+            starting_capital=OPT_CAPITAL, round_trip_cost=OPT_COST,
+        )
+    except Exception as e:
+        import warnings
+        warnings.warn(f"Portfolio sim failed for {params}: {e}")
+        return {"sharpe": -999.0, "cagr": -999.0, "n_trades": len(rows), "n_taken": 0}
 
-    return {"sharpe": sharpe, "n_trades": n, "pnl": pnl}
+    m = res.metrics
+    return {
+        "sharpe":   m["sharpe"],
+        "cagr":     m["cagr"],
+        "max_dd":   m["max_dd"],
+        "n_trades": len(rows),
+        "n_taken":  m["n_taken"],
+        "equity":   res.equity,
+    }
 
 
 # ── Grid search ───────────────────────────────────────────────────────────────
-def run_grid_search(ind_dfs: dict,
-                    verbose: bool = True) -> list[dict]:
-    """
-    Exhaustive grid search on IS data.
-    Returns list of result dicts sorted by IS Sharpe (descending).
-    """
-    keys   = list(PARAM_GRID.keys())
-    values = list(PARAM_GRID.values())
-    combos = list(itertools.product(*values))
+
+def run_grid_search(ind_dfs: dict, verbose: bool = True) -> list[dict]:
+    """Exhaustive grid search on IS data, scored on portfolio Sharpe."""
+    keys    = list(PARAM_GRID.keys())
+    combos  = list(itertools.product(*PARAM_GRID.values()))
     n_total = len(combos)
 
-    print(f"\n  Grid search: {n_total:,} combinations × "
-          f"{len(ind_dfs)} tickers  (IS: {IS_START} → {IS_END})")
+    print(f"\n  Grid search: {n_total:,} combinations x {len(ind_dfs)} tickers")
+    print(f"  IS window : {IS_START} -> {IS_END}")
+    print(f"  Objective : portfolio Sharpe (Rs {OPT_CAPITAL:,.0f}, "
+          f"{OPT_MAX_POS} positions, >= Rs {OPT_MIN_TURNOVER/1e7:.0f} cr/day, "
+          f"{OPT_COST*100:.2f}% costs)")
 
     results = []
     for combo in tqdm(combos, desc="  Optimising", ncols=70):
         params = load_config().to_params_dict()
         params.update(dict(zip(keys, combo)))
-
         res = _run_combo(ind_dfs, params, IS_START, IS_END)
         results.append({
             "params":    params.copy(),
             "is_sharpe": res["sharpe"],
+            "is_cagr":   res.get("cagr", 0.0),
+            "is_maxdd":  res.get("max_dd", 0.0),
             "is_trades": res["n_trades"],
+            "is_taken":  res.get("n_taken", 0),
         })
 
     results.sort(key=lambda x: x["is_sharpe"], reverse=True)
 
+    # Multiple-testing haircut
+    valid = [r["is_sharpe"] for r in results if r["is_sharpe"] > -900]
+    if len(valid) > 2:
+        haircut = expected_max_sharpe(len(valid), float(np.std(valid, ddof=1)))
+        best = results[0]["is_sharpe"]
+        print(f"\n  Multiple-testing check ({len(valid)} valid trials):")
+        print(f"    best IS Sharpe          : {best:.3f}")
+        print(f"    expected best if NO edge: {haircut:.3f}")
+        if best <= haircut:
+            print("    => Best result is INDISTINGUISHABLE FROM NOISE. "
+                  "Do not deploy these parameters.")
+        else:
+            print(f"    => clears the noise bar by {best - haircut:.3f}")
+
     if verbose:
-        print("\n  Top-5 parameter sets (IS Sharpe):")
+        print("\n  Top-5 parameter sets (IS portfolio Sharpe):")
         for k, r in enumerate(results[:5], 1):
             p = r["params"]
-            print(
-                f"  #{k}  Sharpe={r['is_sharpe']:.2f}  n={r['is_trades']}  "
-                f"sl={p['sl_mult']}  tp={p['tp_mult_long']}  "
-                f"adx_l={p['adx_long']}  adx_s={p['adx_short']}  "
-                f"rsi_lo={p['rsi_pb_lo']}  rsi_hi={p['rsi_pb_hi']}  "
-                f"vol={p['vol_mult_long']}"
-            )
+            print(f"  #{k}  Sharpe={r['is_sharpe']:6.2f}  CAGR={r['is_cagr']:6.1f}%  "
+                  f"maxDD={r['is_maxdd']:6.1f}%  taken={r['is_taken']:4d}  "
+                  f"sl={p['sl_mult']}  tp={p['tp_mult_long']}  adx={p['adx_long']}")
 
     return results
 
 
 # ── OOS evaluation ────────────────────────────────────────────────────────────
-def run_oos_evaluation(ind_dfs: dict,
-                       best_params: dict,
+
+def run_oos_evaluation(ind_dfs: dict, best_params: dict,
                        is_sharpe: float) -> dict:
-    """
-    Run best IS params on OOS data. Return metrics and overfitting flag.
-    """
-    print(f"\n  OOS evaluation: {OOS_START} → {OOS_END}")
+    """Run the best IS params on OOS data, scored the same way."""
+    print(f"\n  OOS evaluation: {OOS_START} -> {OOS_END}")
 
     all_trades: list[dict] = []
     for ticker, df in ind_dfs.items():
         sub = df.loc[OOS_START:OOS_END]
         if len(sub) < 50:
             continue
-        trades = run_backtest(sub, params=best_params, ticker=ticker)
-        all_trades.extend(trades)
+        all_trades.extend(run_backtest(sub, params=best_params, ticker=ticker))
 
     if not all_trades:
         print("  [WARN] No OOS trades generated.")
         return {"oos_sharpe": 0.0, "overfit": True}
 
+    res = _run_combo(ind_dfs, best_params, OOS_START, OOS_END)
     tdf = pd.DataFrame(all_trades)
-    m   = compute_metrics(tdf)
+    trade_metrics = compute_metrics(tdf)   # kept for the report / charts
 
-    ratio     = m["sharpe"] / is_sharpe if is_sharpe != 0 else 0.0
-    overfit   = ratio < OVERFIT_THRESHOLD
-    flag      = "⚠ OVERFIT WARNING" if overfit else "✓ OK"
+    ratio   = res["sharpe"] / is_sharpe if is_sharpe not in (0, -999.0) else 0.0
+    overfit = ratio < OVERFIT_THRESHOLD
 
-    print(f"  OOS Trades   : {m['n_trades']}")
-    print(f"  OOS Sharpe   : {m['sharpe']:.2f}")
-    print(f"  IS Sharpe    : {is_sharpe:.2f}")
-    print(f"  OOS/IS ratio : {ratio:.2%}  →  {flag}")
+    print(f"  OOS trades (signals) : {res['n_trades']}")
+    print(f"  OOS trades (funded)  : {res['n_taken']}")
+    print(f"  OOS portfolio Sharpe : {res['sharpe']:.2f}   CAGR {res['cagr']:.1f}%")
+    print(f"  IS  portfolio Sharpe : {is_sharpe:.2f}")
+    print(f"  OOS/IS ratio         : {ratio:.2%}  -> "
+          f"{'OVERFIT WARNING' if overfit else 'OK'}")
 
     return {
         "oos_trades":  all_trades,
-        "oos_metrics": m,
-        "oos_sharpe":  m["sharpe"],
+        "oos_metrics": trade_metrics,
+        "oos_sharpe":  res["sharpe"],
+        "oos_cagr":    res["cagr"],
         "is_sharpe":   is_sharpe,
         "ratio":       ratio,
         "overfit":     overfit,
     }
 
 
+# ── Rolling walk-forward ──────────────────────────────────────────────────────
+
+def rolling_walk_forward(ind_dfs: dict,
+                         folds: list[tuple[str, str, str]] | None = None,
+                         grid: dict | None = None,
+                         fixed: dict | None = None) -> dict:
+    """
+    Expanding-window walk-forward: optimise on everything before each test year,
+    then trade that year untouched. Several independent OOS windows instead of
+    one split — a parameter set that only wins in a single window is fitted.
+    """
+    if folds is None:
+        folds = [
+            ("2016-01-01", "2019-12-31", "2020"),
+            ("2016-01-01", "2020-12-31", "2021"),
+            ("2016-01-01", "2021-12-31", "2022"),
+            ("2016-01-01", "2022-12-31", "2023"),
+            ("2016-01-01", "2023-12-31", "2024"),
+            ("2016-01-01", "2024-12-31", "2025"),
+        ]
+
+    g      = grid if grid is not None else PARAM_GRID
+    keys   = list(g.keys())
+    combos = list(itertools.product(*g.values()))
+
+    print(f"\n  Rolling walk-forward: {len(folds)} folds x {len(combos)} combos")
+    rows = []
+    for tr_start, tr_end, test_year in folds:
+        best, best_sh = None, -1e9
+        for combo in combos:
+            p = load_config().to_params_dict()
+            if fixed:
+                p.update(fixed)
+            p.update(dict(zip(keys, combo)))
+            r = _run_combo(ind_dfs, p, tr_start, tr_end)
+            if r["sharpe"] > best_sh:
+                best_sh, best = r["sharpe"], p
+
+        te = _run_combo(ind_dfs, best, f"{test_year}-01-01", f"{test_year}-12-31")
+        rows.append({
+            "test_year": test_year, "is_sharpe": best_sh,
+            "oos_sharpe": te["sharpe"], "oos_cagr": te["cagr"],
+            "params": {k: best[k] for k in keys},
+        })
+        print(f"    {test_year}: IS {best_sh:6.2f} -> OOS {te['sharpe']:6.2f}  "
+              f"(CAGR {te['cagr']:6.1f}%)  {rows[-1]['params']}")
+
+    oos = [r["oos_sharpe"] for r in rows if r["oos_sharpe"] > -900]
+    if oos:
+        print(f"\n    mean OOS Sharpe {np.mean(oos):.2f}   "
+              f"positive folds {sum(s > 0 for s in oos)}/{len(oos)}")
+        stable = len({tuple(sorted(r['params'].items())) for r in rows})
+        print(f"    distinct winning parameter sets: {stable}/{len(rows)} "
+              f"({'stable' if stable <= 2 else 'UNSTABLE — parameters are fitting noise'})")
+
+    return {"folds": rows}
+
+
 # ── Sensitivity analysis ──────────────────────────────────────────────────────
+
 def sensitivity_analysis(ind_dfs: dict,
                          base_params: dict | None = None) -> dict:
     """
-    Vary each optimised parameter individually ±20 % from base value,
-    keeping all others fixed. Report Sharpe at each value.
-    Flag parameters where ±20 % change causes >30 % Sharpe drop.
+    Vary each grid parameter +/-20% around its base value.
+
+    Use these curves to SELECT parameters, not just to sanity-check them: prefer
+    the centre of a broad plateau over a narrow peak, even if the peak scores
+    higher. A spike will not survive live.
     """
     if base_params is None:
         base_params = load_config().to_params_dict()
 
-    base_res    = _run_combo(ind_dfs, base_params, IS_START, IS_END)
-    base_sharpe = base_res["sharpe"]
+    base_sharpe = _run_combo(ind_dfs, base_params, IS_START, IS_END)["sharpe"]
+    print(f"\n  Sensitivity analysis  (base IS portfolio Sharpe = {base_sharpe:.2f})")
 
-    print(f"\n  Sensitivity analysis  (base IS Sharpe = {base_sharpe:.2f})")
-
-    results: dict[str, list[tuple]] = {}  # param → [(value, sharpe), ...]
-
-    for param in PARAM_GRID.keys():
+    results: dict[str, list[tuple]] = {}
+    for param in PARAM_GRID:
         base_val = base_params[param]
-        deltas   = [-0.20, -0.10, 0.0, +0.10, +0.20]
-        curve    = []
-
-        for d in deltas:
+        curve = []
+        for d in (-0.20, -0.10, 0.0, +0.10, +0.20):
             test_val = base_val * (1.0 + d)
-            # Round integers
             if isinstance(base_val, int):
                 test_val = max(1, int(round(test_val)))
-            p       = base_params.copy()
+            p = base_params.copy()
             p[param] = test_val
-            res     = _run_combo(ind_dfs, p, IS_START, IS_END)
-            curve.append((test_val, res["sharpe"]))
+            curve.append((test_val, _run_combo(ind_dfs, p, IS_START, IS_END)["sharpe"]))
 
-        # Fragility flag: does ±20 % change drop Sharpe by >30 %?
-        extremes   = [curve[0][1], curve[-1][1]]
-        worst      = min(extremes)
-        pct_drop   = (base_sharpe - worst) / abs(base_sharpe) if base_sharpe != 0 else 0
-        fragile    = pct_drop > 0.30
-
-        flag = "⚠ FRAGILE" if fragile else ""
-        print(f"  {param:<18}: base={base_val}  worst±20%Δ Sharpe={worst:.2f}  "
+        worst    = min(curve[0][1], curve[-1][1])
+        pct_drop = (base_sharpe - worst) / abs(base_sharpe) if base_sharpe else 0
+        flag     = "FRAGILE — narrow peak, prefer a plateau" if pct_drop > 0.30 else ""
+        print(f"  {param:<18}: base={base_val}  worst+/-20% Sharpe={worst:.2f}  "
               f"drop={pct_drop:.0%}  {flag}")
         results[param] = curve
 

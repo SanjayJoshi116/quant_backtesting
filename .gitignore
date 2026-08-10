@@ -3,7 +3,11 @@
 # =============================================================================
 
 # ── SECRETS — NEVER commit these ─────────────────────────────────────────────
-.env                    # Gmail credentials, API keys
+# NOTE: '#' only starts a comment at the START of a line. An inline comment
+# becomes part of the pattern, so ".env  # blah" matches nothing. That bug is
+# why .env stayed tracked and was re-committed in b09673e. Keep comments above.
+.env
+.env.*
 *.pem
 *.key
 secrets/
@@ -22,12 +26,17 @@ data/
 results/trades_*.csv
 results/OOS_best.csv
 results/charts/
+results/portfolio_equity.csv
+
+# Trained ML models — regenerate with: python -m core.ml.xgb_scorer
+models/
 # Keep the summary report if you want to version-control results
 # results/summary_report.md  ← uncomment this line to also exclude it
 
 # ── PYTHON CACHE ──────────────────────────────────────────────────────────────
 __pycache__/
-*.py[cod]               # .pyc  .pyo  .pyd
+# .pyc / .pyo / .pyd
+*.py[cod]
 *.pyo
 *.pyd
 *$py.class

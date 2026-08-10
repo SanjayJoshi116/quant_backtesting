@@ -29,7 +29,8 @@ def _round_trip_cost() -> float:
 def run_backtest(df: pd.DataFrame,
                  params: dict | None = None,
                  ticker: str = "",
-                 market_regime: "pd.Series | None" = None) -> list[dict]:
+                 market_regime: "pd.Series | None" = None,
+                 breadth: "pd.Series | None" = None) -> list[dict]:
     """
     Bar-by-bar backtest on a fully-prepared indicator DataFrame.
     Exits: MeshBreak / SL / TP only (no trailing stop).
@@ -58,6 +59,34 @@ def run_backtest(df: pd.DataFrame,
     pbs_tol     = float(p["pb_short_tol"])
     di_gap_min  = float(p["di_gap_min"])
     room_atr    = float(p["min_room_atr"])
+
+    # ── Breadth gate ──────────────────────────────────────────────────────────
+    # Suppress breakout signals when the opportunity set is narrow. `breadth` is
+    # the daily % of the universe in bull_trend (see analysis.compute_universe_
+    # breadth) and must be supplied by the caller — it is cross-sectional, so a
+    # single-ticker backtest cannot compute it.
+    breadth_on  = bool(p.get("breadth_gate_enabled", False)) and breadth is not None
+    breadth_min = float(p.get("breadth_min_pct", 20.0))
+    breadth_sigs = set(p.get("breadth_gated_signals") or ["BO-L"])
+    breadth_a = None
+    if breadth_on:
+        # Align once to this ticker's index; asof() inside the loop is far slower.
+        breadth_a = breadth.reindex(df.index).ffill().values.astype(np.float64)
+
+    # ── ML gate ───────────────────────────────────────────────────────────────
+    # Regime-conditional: the filter costs money in bull runs and saves it in
+    # bad regimes, so the bear threshold is stricter. See config/strategy.yaml.
+    ml_on        = bool(p.get("ml_enabled", False))
+    ml_thr       = float(p.get("ml_min_score", 0.50))
+    ml_thr_bear  = float(p.get("ml_min_score_bear", 0.53))
+    _score_fn    = None
+    if ml_on:
+        try:
+            from core.ml.xgb_scorer import score_signal as _score_fn
+        except Exception as _e:
+            import warnings
+            warnings.warn(f"ML gate requested but scorer unavailable: {_e}")
+            ml_on = False
 
     # ── Position sizing constants (not varied by optimisation grid) ───────────
     _risk_frac = cfg.risk_per_trade_pct / 100.0   # e.g. 0.015 for 1.5%
@@ -93,6 +122,74 @@ def run_backtest(df: pd.DataFrame,
 
     ll50_a   = df["lowest_low_50"].values.astype(np.float64)
 
+    # ── ML feature arrays (only needed when the gate is on) ───────────────────
+    if ml_on:
+        nsup_a  = df["near_support"].values.astype(bool) \
+                  if "near_support" in df.columns else np.zeros(n, dtype=bool)
+        gmesh_a = df["green_mesh"].values.astype(bool) \
+                  if "green_mesh" in df.columns else np.zeros(n, dtype=bool)
+        # Trailing 252-bar high INCLUDING the current bar — matches
+        # core/ml/feature_builder.py so live scores use the same definition.
+        hi252_a = df["High"].rolling(253, min_periods=1).max().values.astype(np.float64)
+
+    # ── Bar validity ──────────────────────────────────────────────────────────
+    # The per-bar guard used to call np.isnan() seven times per iteration
+    # (~15.5M ufunc dispatches over the universe). Same predicate, computed once.
+    bad_bar_a = (np.isnan(ema200_a) | np.isnan(rsi_a) | np.isnan(adx_a) |
+                 np.isnan(atr_a) | np.isnan(vsma_a) | np.isnan(hh12_a) |
+                 np.isnan(ll50_a))
+
+    # ── Vectorised signal conditions ──────────────────────────────────────────
+    # Every entry predicate is elementwise, so it is computed once over the whole
+    # series instead of ~20 scalar comparisons on each of ~2,500 bars per ticker.
+    # NaN compares False in all of these, matching the scalar version; the
+    # explicit isnan guards on hh12/ll12 are kept for parity with the original.
+    with np.errstate(invalid="ignore"):
+        _vol_ok_l = vol_a >= vsma_a * vol_ml
+        _vol_ok_s = vol_a >= vsma_a * vol_ms
+        _adx_ok_l = adx_a >= adx_min_l
+        _adx_ok_s = adx_a >= adx_min_s
+        _di_dom   = (din_a - dip_a) >= di_gap_min
+        _room_ok  = (close_a - ll50_a) >= atr_a * room_atr
+
+        pb_l_ok = (bull_a & (low_a <= ema21_a * pb_tol) & (close_a > ema21_a) &
+                   (rsi_a >= rsi_pb_lo) & (rsi_a <= rsi_pb_hi) &
+                   cbull_a & _adx_ok_l & _vol_ok_l)
+
+        base_bo_ok = (bull_a & base_bo_a &
+                      (rsi_a >= rsi_bo_lo) & (rsi_a <= rsi_bo_hi) &
+                      bocb_a & _adx_ok_l &
+                      (vol_a >= vsma_a * vol_ml * 1.2))   # stronger volume on base breaks
+
+        bo_l_ok = (bull_a & ~np.isnan(hh12_a) & (close_a > hh12_a) &
+                   (rsi_a >= rsi_bo_lo) & (rsi_a <= rsi_bo_hi) &
+                   bocb_a & _adx_ok_l & _vol_ok_l)
+
+        pb_s_ok = (bear_a & (high_a >= ema21_a * pbs_tol) & (close_a < ema21_a) &
+                   (rsi_a >= rsi_pbs_lo) & (rsi_a <= rsi_pbs_hi) &
+                   cbear_a & _adx_ok_s & _vol_ok_s & _di_dom & _room_ok)
+
+        bo_s_ok = (bear_a & ~np.isnan(ll12_a) & (close_a < ll12_a) &
+                   (rsi_a >= rsi_bos_lo) & (rsi_a <= rsi_bos_hi) &
+                   bocs_a & _adx_ok_s & _vol_ok_s & _di_dom & _room_ok)
+
+    # ── Hot-path lists ────────────────────────────────────────────────────────
+    # The loop runs ~2,500 iterations per ticker. Indexing a numpy array from
+    # Python boxes a numpy scalar on every access, which costs more than the
+    # comparison it feeds. Plain lists of Python floats/bools index far faster.
+    # Arrays touched only at trade events (sparse) are left as numpy.
+    bad_bar  = bad_bar_a.tolist()
+    close_l  = close_a.tolist()
+    atr_l    = atr_a.tolist()
+    ema21_l  = ema21_a.tolist()
+    ema50_l  = ema50_a.tolist()
+    pb_l_l     = pb_l_ok.tolist()
+    base_bo_l  = base_bo_ok.tolist()
+    bo_l_l     = bo_l_ok.tolist()
+    pb_s_l     = pb_s_ok.tolist()
+    bo_s_l     = bo_s_ok.tolist()
+    breadth_l  = breadth_a.tolist() if breadth_a is not None else None
+
     # ── Position state ────────────────────────────────────────────────────────
     in_pos     = False
     direction  = ""
@@ -107,14 +204,11 @@ def run_backtest(df: pd.DataFrame,
     trades: list[dict] = []
 
     for i in range(1, n):
-        c  = close_a[i]
-        at = atr_a[i]
+        c  = close_l[i]
+        at = atr_l[i]
 
-        if (np.isnan(ema200_a[i]) or np.isnan(rsi_a[i]) or
-                np.isnan(adx_a[i]) or np.isnan(at) or
-                np.isnan(vsma_a[i]) or np.isnan(hh12_a[i]) or
-                np.isnan(ll50_a[i])):
-            if in_pos and not np.isnan(c) and entry_px > 0:
+        if bad_bar[i]:
+            if in_pos and c == c and entry_px > 0:   # c == c is a fast NaN test
                 raw_pnl = (c / entry_px - 1.0) if direction == "long" \
                           else (entry_px / c - 1.0)
                 pnl_pct = (raw_pnl - _rtc) * 100.0
@@ -142,7 +236,7 @@ def run_backtest(df: pd.DataFrame,
             exit_reason = None
 
             if direction == "long":
-                mesh_brk = (ema21_a[i - 1] > ema50_a[i - 1]) and (ema21_a[i] <= ema50_a[i])
+                mesh_brk = (ema21_l[i - 1] > ema50_l[i - 1]) and (ema21_l[i] <= ema50_l[i])
                 if mesh_brk:
                     exit_px, exit_reason = c, "MeshBreak"
                 elif c <= sl_px:
@@ -151,7 +245,7 @@ def run_backtest(df: pd.DataFrame,
                     exit_px, exit_reason = tp_px, "TP"
 
             else:  # short
-                mesh_brk = (ema21_a[i - 1] < ema50_a[i - 1]) and (ema21_a[i] >= ema50_a[i])
+                mesh_brk = (ema21_l[i - 1] < ema50_l[i - 1]) and (ema21_l[i] >= ema50_l[i])
                 if mesh_brk:
                     exit_px, exit_reason = c, "MeshBreak"
                 elif c >= sl_px:
@@ -190,64 +284,31 @@ def run_backtest(df: pd.DataFrame,
 
         # ── ENTRY ─────────────────────────────────────────────────────────────
         if not in_pos:
-            bull = bull_a[i]
-            bear = bear_a[i]
-            r    = rsi_a[i]
-            a    = adx_a[i]
-            v    = vol_a[i]
-            vs   = vsma_a[i]
-            e21  = ema21_a[i]
-
-            vol_ok_l = v >= vs * vol_ml
-            vol_ok_s = v >= vs * vol_ms
-            adx_ok_l = a >= adx_min_l
-            adx_ok_s = a >= adx_min_s
-            di_dom   = (din_a[i] - dip_a[i]) >= di_gap_min
-            room_ok  = (c - ll50_a[i]) >= at * room_atr
-
             new_sig  = ""
             is_long  = False
             is_short = False
 
-            # PB-L
-            if (bull and
-                    low_a[i] <= e21 * pb_tol and c > e21 and
-                    rsi_pb_lo <= r <= rsi_pb_hi and
-                    cbull_a[i] and adx_ok_l and vol_ok_l):
+            # Conditions are precomputed as boolean arrays before the loop
+            # (see "Vectorised signal conditions" above) — same predicates, same
+            # priority order, ~20 scalar ops per bar removed.
+            if pb_l_l[i]:
                 new_sig, is_long = "PB-L", True
-
-            # BASE-BO — flat base breakout (higher quality, checked before generic BO-L)
-            elif (bull and base_bo_a[i] and
-                    rsi_bo_lo <= r <= rsi_bo_hi and
-                    bocb_a[i] and adx_ok_l and
-                    v >= vs * vol_ml * 1.2):    # require stronger volume on base breaks
+            elif base_bo_l[i]:
                 new_sig, is_long = "BASE-BO", True
-
-            # BO-L — generic 12-bar high breakout
-            elif (bull and
-                    not np.isnan(hh12_a[i]) and c > hh12_a[i] and
-                    rsi_bo_lo <= r <= rsi_bo_hi and
-                    bocb_a[i] and adx_ok_l and vol_ok_l):
+            elif bo_l_l[i]:
                 new_sig, is_long = "BO-L", True
-
-            # PB-S
-            elif (bear and
-                    high_a[i] >= e21 * pbs_tol and c < e21 and
-                    rsi_pbs_lo <= r <= rsi_pbs_hi and
-                    cbear_a[i] and adx_ok_s and vol_ok_s and
-                    di_dom and room_ok):
+            elif pb_s_l[i]:
                 new_sig, is_short = "PB-S", True
 
-            # BO-S
-            elif (bear and
-                    not np.isnan(ll12_a[i]) and c < ll12_a[i] and
-                    rsi_bos_lo <= r <= rsi_bos_hi and
-                    bocs_a[i] and adx_ok_s and vol_ok_s and
-                    di_dom and room_ok):
+            elif bo_s_l[i]:
                 new_sig, is_short = "BO-S", True
 
-
-
+            # Breadth gate: in a narrow market breakouts are mostly false
+            # breakouts. Suppress the named signal types; leave the rest running.
+            if breadth_on and new_sig in breadth_sigs:
+                b = breadth_l[i]
+                if b == b and b < breadth_min:
+                    new_sig, is_long, is_short = "", False, False
 
             # Regime gate: block new long entries when Nifty is below EMA200
             if is_long and market_regime is not None:
@@ -258,6 +319,36 @@ def run_backtest(df: pd.DataFrame,
                 except Exception as _e:
                     import warnings
                     warnings.warn(f"Regime gate error: {_e}")
+
+            # ── ML gate ───────────────────────────────────────────────────────
+            # Scored only at signal bars (sparse), using bar-i values only.
+            if ml_on and (is_long or is_short) and _score_fn is not None:
+                pfh = ((c - hi252_a[i]) / hi252_a[i]) if (i >= 20 and hi252_a[i] > 0) else 0.0
+                prob = _score_fn({
+                    "signal_type":   new_sig,
+                    "direction":     "LONG" if is_long else "SHORT",
+                    "rsi":           float(rsi_a[i]),
+                    "adx":           float(adx_a[i]),
+                    "vol_ratio":     float(vol_a[i]) / max(float(vsma_a[i]), 1e-6),
+                    "atr":           float(at),
+                    "entry":         float(c),
+                    "pct_from_high": float(pfh),
+                    "near_support":  bool(nsup_a[i]),
+                    "bull_trend":    bool(bull_a[i]),
+                    "green_mesh":    bool(gmesh_a[i]),
+                })
+                # Stricter gate when the market regime is bearish.
+                thr = ml_thr
+                if market_regime is not None:
+                    try:
+                        if not bool(market_regime.asof(pd.Timestamp(dates[i]))):
+                            thr = ml_thr_bear
+                    except Exception as _e:
+                        import warnings
+                        warnings.warn(f"ML regime threshold lookup failed: {_e}")
+                if prob < thr:
+                    is_long = is_short = False
+                    new_sig = ""
 
             if is_long:
                 in_pos      = True

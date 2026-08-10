@@ -21,6 +21,7 @@ Features used:
 from __future__ import annotations
 
 import glob
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -68,12 +69,18 @@ def build_features(results_dir: str | None = None) -> pd.DataFrame:
     base = Path(results_dir) if results_dir else _RESULTS
     frames = []
     for f in glob.glob(str(base / "trades_*.csv")):
+        # trades_OOS_best.csv is the optimiser's walk-forward aggregate: a
+        # DIFFERENT parameter set, and ~56% of its rows duplicate trades already
+        # present in the per-ticker files. Pooling it double-counts samples and
+        # mixes two strategies into one training set.
+        if "OOS" in Path(f).name:
+            continue
         try:
             df = pd.read_csv(f)
             if not df.empty and "signal_type" in df.columns:
                 frames.append(df)
-        except Exception:
-            pass
+        except Exception as e:
+            warnings.warn(f"Skipping {Path(f).name}: {e}")
 
     if not frames:
         raise FileNotFoundError("No trade CSVs found — run backtest first.")
