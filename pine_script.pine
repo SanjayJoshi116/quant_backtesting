@@ -407,39 +407,42 @@ fresh_short = show_short and not in_short
 // Compact by default: the setup type and score are what you act on. The price
 // is already on the axis and the % is on the exit label.
 
+// The action is what you need to read across the chart, so the label leads with
+// BUY / SELL SHORT and the setup code rides along after it. Everything else on
+// the chart is deliberately quieter than this.
 long_label  = label_full ?
-     "LONG  ₹" + str.tostring(math.round(close, 2)) +
-     "  " + str.tostring(signal_score) + "/7  " + long_type :
-     long_type + "  " + str.tostring(signal_score) + "/7"
+     "BUY  ₹" + str.tostring(math.round(close, 2)) +
+     "  " + long_type + "  " + str.tostring(signal_score) + "/7" :
+     "BUY  " + long_type
 
 short_label = label_full ?
-     "SHORT  ₹" + str.tostring(math.round(close, 2)) +
-     "  " + str.tostring(signal_score_s) + "/6  " + short_type :
-     short_type + "  " + str.tostring(signal_score_s) + "/6"
+     "SELL SHORT  ₹" + str.tostring(math.round(close, 2)) +
+     "  " + short_type + "  " + str.tostring(signal_score_s) + "/6" :
+     "SELL SHORT  " + short_type
 
-plotshape(fresh_long,  "LONG Entry",
+plotshape(fresh_long,  "BUY Entry",
           shape.triangleup, location.belowbar,
-          color.new(color.lime, 0), text="", size=size.tiny)
+          color.new(color.lime, 0), text="", size=size.normal)
 
-plotshape(fresh_short, "SHORT Entry",
+plotshape(fresh_short, "SELL SHORT Entry",
           shape.triangledown, location.abovebar,
-          color.new(color.red, 0), text="", size=size.tiny)
+          color.new(color.red, 0), text="", size=size.normal)
 
 if show_marks and fresh_long
-    label.new(bar_index, low - atr * 0.4,
+    label.new(bar_index, low - atr * 0.5,
          text=long_label,
-         color=color.new(color.green, 25),
+         color=color.new(color.green, 0),
          textcolor=color.white,
          style=label.style_label_up,
-         size=size.tiny)
+         size=size.normal)
 
 if show_marks and fresh_short
-    label.new(bar_index, high + atr * 0.4,
+    label.new(bar_index, high + atr * 0.5,
          text=short_label,
-         color=color.new(color.red, 25),
+         color=color.new(color.red, 0),
          textcolor=color.white,
          style=label.style_label_down,
-         size=size.tiny)
+         size=size.normal)
 
 // ─── TRADE ZONES: where you get out, drawn while you are still in ────────────
 // Three lines plus two shaded bands. The green band is everything between your
@@ -493,21 +496,25 @@ if barstate.islast and show_marks
 // trade, red = you lost. The reason and the P&L are both on the label, so a
 // closed trade reads without opening the strategy tester.
 if show_marks and exit_why != ""
-    won = exit_pnl > 0
-    label.new(bar_index, exit_was_lg ? high + atr * 0.4 : low - atr * 0.4,
+    won  = exit_pnl > 0
+    // "SELL" closes a long, "COVER" closes a short — the word tells you the
+    // action to take, the same way BUY does on the entry.
+    verb = exit_was_lg ? "SELL" : "COVER"
+    pnl_txt = (exit_pnl >= 0 ? "+" : "") + str.tostring(math.round(exit_pnl, 1)) + "%"
+    label.new(bar_index, exit_was_lg ? high + atr * 0.5 : low - atr * 0.5,
          text = label_full ?
-              exit_why + "  ₹" + str.tostring(math.round(exit_px, 2)) + "  " +
-              (exit_pnl >= 0 ? "+" : "") + str.tostring(math.round(exit_pnl, 1)) + "%" :
-              (exit_pnl >= 0 ? "+" : "") + str.tostring(math.round(exit_pnl, 1)) + "%",
-         color     = won ? color.new(color.teal, 20) : color.new(color.maroon, 20),
+              verb + "  " + exit_why + "  ₹" +
+              str.tostring(math.round(exit_px, 2)) + "  " + pnl_txt :
+              verb + "  " + pnl_txt,
+         color     = won ? color.new(color.teal, 0) : color.new(color.maroon, 0),
          textcolor = color.white,
          style     = exit_was_lg ? label.style_label_down : label.style_label_up,
-         size      = size.tiny)
+         size      = size.normal)
 
 plotshape(exit_why != "" and exit_was_lg,  "Exit Long",
-          shape.xcross, location.abovebar, color.new(color.white, 0), size=size.tiny)
+          shape.xcross, location.abovebar, color.new(color.white, 0), size=size.small)
 plotshape(exit_why != "" and not exit_was_lg, "Exit Short",
-          shape.xcross, location.belowbar, color.new(color.white, 0), size=size.tiny)
+          shape.xcross, location.belowbar, color.new(color.white, 0), size=size.small)
 
 // ─── PROFESSIONAL DASHBOARD TABLE ─────────────────────────────────────────────
 // Bigger, cleaner, sectioned — dark theme
