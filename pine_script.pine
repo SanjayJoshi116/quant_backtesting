@@ -274,30 +274,62 @@ if in_short
 trail_sl_long  = trail_active_l ? trail_high - atr * trail_offset : na
 trail_sl_short = trail_active_s ? trail_low  + atr * trail_offset : na
 
-// ─── EXITS (unchanged) ────────────────────────────────────────────────────────
+// ─── EXITS ────────────────────────────────────────────────────────────────────
+// Each exit records WHY it fired and at WHAT price, so the chart can draw a
+// readable marker instead of TradingView's default "-10 SL" quantity tag.
+// Fill assumption matches the exit test: SL/TP fill AT the level, mesh and
+// trail exits fill at the close.
+// Plain (non-var) locals: they reset to these defaults on every bar, so no
+// manual clearing is needed and a stale exit can never be redrawn.
+string exit_why    = ""
+float  exit_px     = na
+float  exit_pnl    = na
+bool   exit_was_lg = false
+
 if in_long
     sl_price = entry_price - atr * sl_mult
     tp_price = entry_price + atr * tp_mult_long
     if mesh_breaks_red
         strategy.close("Long", comment="Mesh Break")
+        exit_why := "MESH"
+        exit_px  := close
     else if use_trail and trail_active_l and low <= trail_sl_long
         strategy.close("Long", comment="Trail Stop")
+        exit_why := "TRAIL"
+        exit_px  := trail_sl_long
     else if low <= sl_price
         strategy.close("Long", comment="SL")
+        exit_why := "STOP"
+        exit_px  := sl_price
     else if high >= tp_price
         strategy.close("Long", comment="TP")
+        exit_why := "TARGET"
+        exit_px  := tp_price
+    if exit_why != ""
+        exit_was_lg := true
+        exit_pnl    := (exit_px / entry_price - 1) * 100
 
 if in_short
     sl_price = entry_price + atr * sl_mult
     tp_price = entry_price - atr * tp_short
     if mesh_breaks_green
         strategy.close("Short", comment="Mesh Break")
+        exit_why := "MESH"
+        exit_px  := close
     else if use_trail and trail_active_s and high >= trail_sl_short
         strategy.close("Short", comment="Trail Stop")
+        exit_why := "TRAIL"
+        exit_px  := trail_sl_short
     else if high >= sl_price
         strategy.close("Short", comment="SL")
+        exit_why := "STOP"
+        exit_px  := sl_price
     else if low <= tp_price
         strategy.close("Short", comment="TP")
+        exit_why := "TARGET"
+        exit_px  := tp_price
+    if exit_why != ""
+        exit_pnl := (entry_price / exit_px - 1) * 100
 
 // ─── ENTRIES (unchanged) ──────────────────────────────────────────────────────
 if show_long
@@ -341,13 +373,9 @@ plotshape(mesh_breaks_red, "EMA 21 < 50",
           color.new(color.maroon, 30),
           text="EMA 21<50", textcolor=color.white, size=size.tiny)
 
-// ─── MESH BREAK EXIT MARKERS ──────────────────────────────────────────────────
-plotshape(mesh_breaks_red   and in_long,  "Mesh Break Long Exit",
-          shape.xcross, location.abovebar,
-          color.new(color.red, 0), size=size.small)
-plotshape(mesh_breaks_green and in_short, "Mesh Break Short Exit",
-          shape.xcross, location.belowbar,
-          color.new(color.lime, 0), size=size.small)
+// Mesh-break exits used to get their own marker here. They are now covered by
+// the unified EXIT label further down, which also carries the P&L — two markers
+// on the same bar was just clutter.
 
 // ─── TRADE ENTRY SIGNALS ──────────────────────────────────────────────────────
 // LARGE triangles = actual trade signals (rare, all conditions met)
@@ -389,20 +417,70 @@ if show_short
          style=label.style_label_down,
          size=size.small)
 
-// ─── SL / TP / TRAIL LINES ────────────────────────────────────────────────────
-plot(in_long  ? entry_price - atr * sl_mult      : na, "Long SL",
-     color.new(color.red,    0), style=plot.style_linebr, linewidth=1)
-plot(in_long  ? entry_price + atr * tp_mult_long : na, "Long TP",
-     color.new(color.green,  0), style=plot.style_linebr, linewidth=1)
-plot(in_short ? entry_price + atr * sl_mult      : na, "Short SL",
-     color.new(color.red,    0), style=plot.style_linebr, linewidth=1)
-plot(in_short ? entry_price - atr * tp_short     : na, "Short TP",
-     color.new(color.green,  0), style=plot.style_linebr, linewidth=1)
+// ─── TRADE ZONES: where you get out, drawn while you are still in ────────────
+// Three lines plus two shaded bands. The green band is everything between your
+// entry and your target; the red band is entry down to your stop. While a trade
+// is open you can see both exits and their distance at a glance, instead of
+// hunting for a 1px dotted line.
+lvl_entry = in_long or in_short ? entry_price : na
+lvl_sl    = in_long  ? entry_price - atr * sl_mult :
+            in_short ? entry_price + atr * sl_mult : na
+lvl_tp    = in_long  ? entry_price + atr * tp_mult_long :
+            in_short ? entry_price - atr * tp_short : na
 
-plot(in_long  and trail_active_l ? trail_sl_long  : na, "Trail Long",
-     color.new(color.orange, 0), style=plot.style_linebr, linewidth=1)
-plot(in_short and trail_active_s ? trail_sl_short : na, "Trail Short",
-     color.new(color.orange, 0), style=plot.style_linebr, linewidth=1)
+p_entry = plot(lvl_entry, "Entry",  color.new(color.gray,  20),
+               style=plot.style_linebr, linewidth=2)
+p_sl    = plot(lvl_sl,    "Stop",   color.new(color.red,    0),
+               style=plot.style_linebr, linewidth=2)
+p_tp    = plot(lvl_tp,    "Target", color.new(color.green,  0),
+               style=plot.style_linebr, linewidth=2)
+
+fill(p_entry, p_tp, color.new(color.green, 88), title="Reward zone")
+fill(p_entry, p_sl, color.new(color.red,   88), title="Risk zone")
+
+plot(use_trail and in_long  and trail_active_l ? trail_sl_long  : na, "Trail Long",
+     color.new(color.orange, 0), style=plot.style_linebr, linewidth=2)
+plot(use_trail and in_short and trail_active_s ? trail_sl_short : na, "Trail Short",
+     color.new(color.orange, 0), style=plot.style_linebr, linewidth=2)
+
+// Price tags on the live levels, so the exact rupee figure is readable without
+// tracing the line across to the axis.
+var label tag_sl = na
+var label tag_tp = na
+if barstate.islast
+    label.delete(tag_sl)
+    label.delete(tag_tp)
+    if in_long or in_short
+        tag_sl := label.new(bar_index + 3, lvl_sl,
+             "STOP  ₹" + str.tostring(math.round(lvl_sl, 2)) +
+             "  (" + str.tostring(math.round((lvl_sl / entry_price - 1) * 100, 1)) + "%)",
+             color=color.new(color.red, 20), textcolor=color.white,
+             style=label.style_label_left, size=size.small)
+        tag_tp := label.new(bar_index + 3, lvl_tp,
+             "TARGET  ₹" + str.tostring(math.round(lvl_tp, 2)) +
+             "  (" + str.tostring(math.round((lvl_tp / entry_price - 1) * 100, 1)) + "%)",
+             color=color.new(color.green, 20), textcolor=color.white,
+             style=label.style_label_left, size=size.small)
+
+// ─── EXIT MARKERS ─────────────────────────────────────────────────────────────
+// Coloured by OUTCOME, not by reason: green label = you made money on this
+// trade, red = you lost. The reason and the P&L are both on the label, so a
+// closed trade reads without opening the strategy tester.
+if exit_why != ""
+    won = exit_pnl > 0
+    label.new(bar_index, exit_was_lg ? high + atr * 0.4 : low - atr * 0.4,
+         text = "EXIT " + exit_why + "  ₹" + str.tostring(math.round(exit_px, 2)) +
+                "  " + (exit_pnl >= 0 ? "+" : "") +
+                str.tostring(math.round(exit_pnl, 2)) + "%",
+         color     = won ? color.new(color.teal, 10) : color.new(color.maroon, 10),
+         textcolor = color.white,
+         style     = exit_was_lg ? label.style_label_down : label.style_label_up,
+         size      = size.small)
+
+plotshape(exit_why != "" and exit_was_lg,  "Exit Long",
+          shape.xcross, location.abovebar, color.new(color.white, 0), size=size.tiny)
+plotshape(exit_why != "" and not exit_was_lg, "Exit Short",
+          shape.xcross, location.belowbar, color.new(color.white, 0), size=size.tiny)
 
 // ─── PROFESSIONAL DASHBOARD TABLE ─────────────────────────────────────────────
 // Bigger, cleaner, sectioned — dark theme
