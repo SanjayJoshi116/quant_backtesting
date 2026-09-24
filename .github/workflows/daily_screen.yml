@@ -46,6 +46,33 @@ jobs:
         # no strategy signals, no entry/SL/TP levels.
         run: python tools/export_snapshot.py --top 200
 
+      - name: Publish snapshot to the public site repo
+        # Pushes ONLY the computed snapshot to Tilak004/stock-site, which
+        # Cloudflare Pages watches. Strategy code never leaves this repo.
+        # SITE_REPO_TOKEN is a fine-grained PAT scoped to stock-site with
+        # Contents: read+write, and nothing else.
+        env:
+          SITE_TOKEN: ${{ secrets.SITE_REPO_TOKEN }}
+        run: |
+          if [ -z "$SITE_TOKEN" ]; then
+            echo "SITE_REPO_TOKEN not set — skipping publish."
+            exit 0
+          fi
+          git clone --depth 1             "https://x-access-token:$SITE_TOKEN@github.com/Tilak004/stock-site.git" site_repo
+          mkdir -p site_repo/public/data
+          cp public/data/snapshot.json site_repo/public/data/snapshot.json
+          cd site_repo
+          git config user.name  "snapshot-bot"
+          git config user.email "actions@github.com"
+          git checkout -B main            # also covers a still-empty repo
+          git add public/data/snapshot.json
+          if git diff --cached --quiet; then
+            echo "Snapshot unchanged — nothing to publish."
+          else
+            git commit -m "data: snapshot $(date -u +%F)"
+            git push -u origin main
+          fi
+
       - name: Persist paper-trade ledger
         # The screener logs new signals + updates open positions in
         # logs/paper_trades.csv. Commit it back so the ledger survives across
