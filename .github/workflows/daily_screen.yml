@@ -44,7 +44,9 @@ jobs:
         # the cached bars rather than re-downloading 2,258 tickers.
         # Publishes the 200 most liquid names; standard indicator values only,
         # no strategy signals, no entry/SL/TP levels.
-        run: python tools/export_snapshot.py --top 200
+        run: |
+          python tools/export_snapshot.py --top 200
+          python tools/export_series.py --days 180
 
       - name: Publish snapshot to the public site repo
         # Pushes ONLY the computed snapshot to Tilak004/stock-site, which
@@ -61,11 +63,12 @@ jobs:
           git clone --depth 1             "https://x-access-token:$SITE_TOKEN@github.com/Tilak004/stock-site.git" site_repo
           mkdir -p site_repo/public/data
           cp public/data/snapshot.json site_repo/public/data/snapshot.json
+          cp public/data/series.json   site_repo/public/data/series.json
           cd site_repo
           git config user.name  "snapshot-bot"
           git config user.email "actions@github.com"
           git checkout -B main            # also covers a still-empty repo
-          git add public/data/snapshot.json
+          git add public/data/snapshot.json public/data/series.json
           if git diff --cached --quiet; then
             echo "Snapshot unchanged — nothing to publish."
           else
