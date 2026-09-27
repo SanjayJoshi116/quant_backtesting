@@ -10,7 +10,7 @@ A complete end-to-end swing trading system for NSE (National Stock Exchange of I
 | Layer | Tool | Purpose |
 |---|---|---|
 | Visual | TradingView Pine Script | See signals, EMA mesh, SL/TP lines live on any NSE chart |
-| Validation | Python backtester | Test the strategy on 10 years of daily data across 869 stocks |
+| Validation | Python backtester | Test the strategy on ~9.5 years (2016-10 — 2026-04) of daily data across 869 stocks |
 | Automation | Python alert bot | Scan all stocks every morning, email signals with trade levels |
 
 The bot emails you every weekday at 11 AM with any stocks that fired a signal — entry price, stop loss, take profit, conviction score. You open the chart, confirm with your own TA, and place the trade manually.
@@ -122,25 +122,43 @@ nearer 2.0–2.5. Alpha is episodic (concentrated in 2020/2021/2024; ~0 in
 2018/2019/2025) and no single year is individually significant. Survivorship bias
 inflates the idiosyncratic component specifically — i.e. exactly this number.
 
-### Forward paper trading (2026-05-13 → 2026-08-10, 517 closed)
+### Forward paper trading (2026-05-13 → 2026-09-24, 864 closed)
 
 The honest out-of-sample check — real signals, no hindsight:
 
 | Metric | Paper | Backtest |
 |---|---|---|
-| Win rate | 38.7% | 39.5% |
-| Payoff ratio | 1.98 | ~2.10 |
-| Expectancy | +0.87%/trade | — |
+| Win rate | 36.5% | 39.5% |
+| Payoff ratio | 2.03 | ~2.10 |
+| Expectancy | +0.60%/trade | +1.63%/trade |
+| Profit factor | 1.17 | 1.44 |
 
-Signal quality matched the backtest closely. But the two signal types diverge
-sharply:
+Payoff ratio held up. Expectancy did not: **the live edge is 63% below the
+backtest.** Survivorship bias in the universe list is the leading suspect, since
+it inflates exactly the component that decayed.
 
-| Signal | n | Win rate | Avg P&L | Total |
-|---|---|---|---|---|
-| **PB-L** | 87 (17%) | **51.7%** | **+3.59%** | **+312.6%** |
-| BO-L | 428 (83%) | 36.2% | +0.33% | +141.7% |
+**These figures are gross.** `core/paper_trader.py` applies no transaction costs,
+and the edge is thin enough that costs decide whether it exists at all:
 
-**PB-L is 17% of trades and 70% of profit.** This independently confirms the
+| Round-trip cost | Expectancy | Profit factor |
+|---|---|---|
+| 0.00% (as logged) | +0.60% | 1.17 |
+| 0.30% | +0.30% | 1.08 |
+| 0.60% | +0.00% | 1.00 |
+
+Indian delivery costs (STT 0.2% round trip, plus charges, GST, stamp duty and
+real slippage) land at 0.4–0.6% on liquid names and worse on the microcap tail.
+Treat the live result as break-even until the ledger is net of costs.
+
+The two signal types continue to diverge sharply:
+
+| Signal | n | Win rate | Avg P&L | Total | Share of P&L |
+|---|---|---|---|---|---|
+| **PB-L** | 123 (14%) | **45.5%** | **+2.47%** | **+303.5%** | **58%** |
+| BO-L | 736 (85%) | 35.1% | +0.31% | +229.0% | 44% |
+| BASE-BO | 5 (1%) | 20.0% | −2.23% | −11.1% | −2% |
+
+**PB-L is 14% of trades and 58% of profit.** This independently confirms the
 backtest finding that breakouts underperform pullbacks in narrow markets.
 
 Note: the 0–7 conviction score is **confounded with signal type** — every BO-L
@@ -171,8 +189,7 @@ quant_backtesting/
 │   ├── portfolio.py          # Single-account replay w/ capital limit + liquidity
 │   └── ml/
 │       ├── feature_builder.py  # ML feature engineering
-│       ├── xgb_scorer.py       # XGBoost quality scorer + walk-forward scoring
-│       └── kronos_features.py  # Kronos path features (UNUSED — see note below)
+│       └── xgb_scorer.py       # XGBoost quality scorer + walk-forward scoring
 │
 ├── tools/
 │   ├── run_portfolio.py      # Portfolio replay: capital limits, ranking rules
@@ -324,7 +341,7 @@ pip install ruff && ruff check .
 - **Timeframe mismatch:** The Pine Script is tuned for 3H bars; the backtester uses daily bars (yfinance only provides free intraday data for the last 60 days). Use the bot alert to identify *which* stock to look at, then open the 3H chart on TradingView to time the actual entry.
 - **Short selling:** Indian cash equity cannot be shorted overnight — positions must be squared off intraday. Holding a short needs stock futures (F&O, ~180-220 eligible names) or SLB. The backtest's short side is effectively dead anyway (84 trades in a decade, net negative).
 - **Liquidity matters more than anything else here:** the backtest assumes 0.05% slippage per side on all 869 names. That is fine for largecaps and fiction for a stock trading ₹20 lakh a day. Run `tools/liquidity_screen.py` before trusting any return figure.
-- **Kronos is not wired in:** `core/ml/kronos_features.py` and `vendor/kronos/` were an evaluation of the Kronos candlestick foundation model. Zero-shot forecasts proved unstable on daily NSE bars (the same stock/date swung from −7% to +13% purely on context length), so it is unused. Kept for a future fine-tuned attempt.
+- **Kronos was evaluated and rejected:** the Kronos candlestick foundation model was tested as a source of path features. Zero-shot forecasts proved unstable on daily NSE bars — the same stock and date swung from −7% to +13% purely on context length — so it was never wired in. The code was removed in the 2026-09 cleanup; recover it from git history if a fine-tuned attempt is ever worth making.
 - **Not financial advice:** This is a quantitative research and learning project. Always do your own analysis before placing any trade.
 
 ---

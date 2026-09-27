@@ -4,7 +4,7 @@
 
 Three-tier quantitative trading system for NSE (Indian equities):
 
-1. **Backtester** (`main.py` + `backtester.py`) — validates strategy on 10 years of daily OHLCV across 869 stocks
+1. **Backtester** (`main.py` + `backtester.py`) — validates strategy on ~9.5 years (2016-10 — 2026-04) of daily OHLCV across 869 stocks
 2. **Live screener** (`bot/`) — scans 2,258 NSE stocks each morning, emails actionable signals
 3. **Dashboard** (`dashboard.py`) — Streamlit UI for signals, scorecard, patterns, fundamentals
 

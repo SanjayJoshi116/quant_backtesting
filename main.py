@@ -283,7 +283,7 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
     _hdr(10, "Summary Report")
     _write_summary_report(
         available, metrics_dict, combined_metrics,
-        optim_results, mc_result, adj
+        optim_results, mc_result, adj, combined_df
     )
 
     # ── Final table ───────────────────────────────────────────────────────────
@@ -291,14 +291,36 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
 
 
 # ── Summary report writer ─────────────────────────────────────────────────────
+def _trade_span(combined_df) -> str:
+    """Return the real tested period, e.g. "2016-10 to 2026-04 (9.5 years)".
+
+    Falls back to "period unavailable" rather than inventing a range, so the
+    report never states a span the trades do not support.
+    """
+    if combined_df is None or combined_df.empty:
+        return "period unavailable"
+    entries = pd.to_datetime(combined_df["entry_date"], errors="coerce").dropna()
+    exits   = pd.to_datetime(combined_df["exit_date"],  errors="coerce").dropna()
+    if entries.empty:
+        return "period unavailable"
+    first = entries.min()
+    last  = max(entries.max(), exits.max()) if not exits.empty else entries.max()
+    years = (last - first).days / 365.25
+    return f"{first:%Y-%m} to {last:%Y-%m} ({years:.1f} years)"
+
+
 def _write_summary_report(available, metrics_dict, combined_metrics,
-                           optim_results, mc_result, adj_z) -> None:
+                           optim_results, mc_result, adj_z, combined_df) -> None:
     cm = combined_metrics
+    # Derive the tested period from the trades themselves. It used to be a
+    # hardcoded "2019-2026" string, which drifted out of step with the data as
+    # the universe and history grew.
+    span = _trade_span(combined_df)
     lines = [
         "# NSE Swing Strategy — Backtest Summary Report",
         f"\nGenerated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}",
         f"\n## Universe\n{', '.join(t.replace('.NS','') for t in available)}",
-        "\n## Combined Portfolio (all stocks, default params, 2019–2026)",
+        f"\n## Combined Portfolio (all stocks, default params, {span})",
         "",
         "| Metric            | Value           |",
         "|-------------------|-----------------|",

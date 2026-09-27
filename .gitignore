@@ -33,8 +33,8 @@ results/edge_check_smoke/
 
 # Trained ML models — regenerate with: python -m core.ml.xgb_scorer
 models/
-# Keep the summary report if you want to version-control results
-# results/summary_report.md  ← uncomment this line to also exclude it
+# Generated on every `python main.py` run, so it is not version-controlled.
+results/summary_report.md
 
 # ── PYTHON CACHE ──────────────────────────────────────────────────────────────
 __pycache__/
@@ -86,3 +86,7 @@ logs/*
 # ── WINDOWS SPECIFIC ──────────────────────────────────────────────────────────
 desktop.ini
 ehthumbs.db
+
+# BMAD agent scaffolding — kept on disk, not version-controlled
+_bmad/
+.claude/skills/
