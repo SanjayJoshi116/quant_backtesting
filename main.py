@@ -28,7 +28,9 @@ from analysis     import (compute_metrics, compute_equity_curve,
                           adjusted_z_test, build_trade_return_matrix,
                           nifty_rolling_corr, print_metrics)
 from optimization import run_grid_search, run_oos_evaluation, sensitivity_analysis
-from montecarlo   import run_monte_carlo, compute_mc_bands, print_mc_summary
+from montecarlo   import (run_monte_carlo_portfolio, compute_mc_bands,
+                          print_mc_summary)
+from core.portfolio import simulate_portfolio
 from charts       import (plot_equity_curves, plot_drawdown,
                           plot_monthly_heatmap, plot_winrate_by_year,
                           plot_pf_by_signal, plot_trade_distribution,
@@ -224,25 +226,46 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
     except Exception as exc:
         print(f"  [WARN] Sensitivity analysis failed: {exc}")
 
-    # ── STAGE 7: Monte Carlo ──────────────────────────────────────────────────
-    _hdr(7, "Monte Carlo Simulation")
-    mc_result = None
-    mc_bands  = (None, None, None)
+    # ── STAGE 7: Portfolio Replay & Monte Carlo ───────────────────────────────
+    _hdr(7, "Portfolio Replay & Monte Carlo")
+    port_result = None
+    mc_result   = None
+    mc_bands    = (None, None, None)
+    _cfg     = load_config()
+    _mc_init = _cfg.starting_capital
     try:
         if not combined_df.empty:
-            # Use pnl_on_equity (position-sized returns) for realistic equity paths
-            _mc_col  = "pnl_on_equity" if "pnl_on_equity" in combined_df.columns \
-                       else "pnl_pct"
-            _mc_init = load_config().starting_capital
-            pnls     = combined_df[_mc_col].values
-            mc_result = run_monte_carlo(pnls, n_simulations=10_000,
-                                        initial_equity=_mc_init)
+            # The capital-constrained replay is the only figure here that
+            # describes a real account: one book of starting_capital rupees,
+            # max_positions slots, round-trip costs deducted at exit, and profits
+            # compounding into the size of later positions. Anything pooled from
+            # the per-ticker runs instead implies ~115 concurrent positions at
+            # ~19.5% of equity each, i.e. roughly 22x leverage.
+            port_result = simulate_portfolio(combined_df)
+            pm = port_result.metrics
+            n_sig = pm["n_taken"] + pm["n_skipped"]
+            print(f"  Account      : Rs {_mc_init:,.0f} start, "
+                  f"{_cfg.max_positions} slots, {_cfg.max_gross_pct:.0f}% max gross")
+            print(f"  Signals      : took {pm['n_taken']:,} of {n_sig:,} "
+                  f"({pm['fill_rate']:.1f}% fill)")
+            print(f"  CAGR {pm['cagr']:.2f}%   Sharpe {pm['sharpe']:.2f}   "
+                  f"MaxDD {pm['max_dd']:.2f}%   TotRet {pm['total_return']:.1f}%")
+
+            daily = port_result.equity.pct_change().dropna()
+            mc_result = run_monte_carlo_portfolio(
+                daily.values, horizon_days=250, n_simulations=10_000,
+                initial_equity=_mc_init)
             if mc_result:
                 print_mc_summary(mc_result)
-                mc_bands = compute_mc_bands(pnls, n_simulations=1_000,
-                                            initial_equity=_mc_init)
+            # Fan-chart bands stay trade-based: they are a shape diagnostic, not
+            # an account projection.
+            _mc_col = "pnl_on_equity" if "pnl_on_equity" in combined_df.columns \
+                      else "pnl_pct"
+            mc_bands = compute_mc_bands(combined_df[_mc_col].values,
+                                        n_simulations=1_000,
+                                        initial_equity=_mc_init)
     except Exception as exc:
-        print(f"  [WARN] Monte Carlo failed: {exc}")
+        print(f"  [WARN] Portfolio replay / Monte Carlo failed: {exc}")
 
     # ── STAGE 8: Correlation & Regime ─────────────────────────────────────────
     _hdr(8, "Correlation & Regime Analysis")
@@ -283,7 +306,7 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
     _hdr(10, "Summary Report")
     _write_summary_report(
         available, metrics_dict, combined_metrics,
-        optim_results, mc_result, adj, combined_df
+        optim_results, mc_result, adj, combined_df, port_result
     )
 
     # ── Final table ───────────────────────────────────────────────────────────
@@ -310,17 +333,60 @@ def _trade_span(combined_df) -> str:
 
 
 def _write_summary_report(available, metrics_dict, combined_metrics,
-                           optim_results, mc_result, adj_z, combined_df) -> None:
+                           optim_results, mc_result, adj_z, combined_df,
+                           port_result=None) -> None:
     cm = combined_metrics
     # Derive the tested period from the trades themselves. It used to be a
     # hardcoded "2019-2026" string, which drifted out of step with the data as
     # the universe and history grew.
     span = _trade_span(combined_df)
+    cfg  = load_config()
     lines = [
         "# NSE Swing Strategy — Backtest Summary Report",
         f"\nGenerated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}",
         f"\n## Universe\n{', '.join(t.replace('.NS','') for t in available)}",
-        f"\n## Combined Portfolio (all stocks, default params, {span})",
+    ]
+
+    # ── Headline: the account-level result ────────────────────────────────────
+    if port_result is not None:
+        pm    = port_result.metrics
+        n_sig = pm["n_taken"] + pm["n_skipped"]
+        lines += [
+            f"\n## Account Results — single book, {span}",
+            "",
+            f"One account of ₹{cfg.starting_capital:,.0f}, at most "
+            f"{cfg.max_positions} open positions, {cfg.max_gross_pct:.0f}% max "
+            f"gross exposure, {(cfg.commission_pct + cfg.slippage_pct) * 2:.2%} "
+            "round-trip costs deducted, profits compounding into later position "
+            "sizes. **These are the only numbers in this report that describe a "
+            "tradeable account.**",
+            "",
+            "| Metric            | Value           |",
+            "|-------------------|-----------------|",
+            f"| CAGR              | {pm['cagr']:.2f}% |",
+            f"| Total Return      | {pm['total_return']:.1f}% |",
+            f"| Sharpe (ann.)     | {pm['sharpe']:.2f} |",
+            f"| Sortino (ann.)    | {pm.get('sortino', 0):.2f} |",
+            f"| Max Drawdown      | {pm['max_dd']:.2f}% |",
+            f"| Signals taken     | {pm['n_taken']:,} of {n_sig:,} ({pm['fill_rate']:.1f}% fill) |",
+            f"| Years             | {pm.get('years', 0):.1f} |",
+            "",
+            f"Only {pm['fill_rate']:.1f}% of signals are fundable at this capital. "
+            "The remainder are skipped for want of a free slot or free cash, so "
+            "the per-trade statistics below describe a far larger opportunity set "
+            "than any single account can act on.",
+        ]
+
+    lines += [
+        f"\n## Per-Trade Statistics (all {len(available)} stocks, default params, {span})",
+        "",
+        "⚠ **Not account figures.** Each ticker is backtested independently with "
+        "no shared capital, so ~115 positions can be open at once at ~19.5% of "
+        "equity each — roughly 22x leverage. Sharpe here is annualised by "
+        "√(trades per year), which overstates it by about √(concurrent "
+        "positions), and the drawdown is measured against peaks the account "
+        "never reaches. Treat this section as signal quality only.",
+        "",
         "",
         "| Metric            | Value           |",
         "|-------------------|-----------------|",
@@ -337,10 +403,17 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
         f"| Expectancy t-stat | {cm['z_stat']:.2f} (p={cm['p_value']:.4f}) |",
         "| *(H0: mean return = 0, one-tailed. p < 0.05 = statistically significant edge)* | |",
         "",
-        f"**Inter-stock avg ρ** : {adj_z.get('avg_rho', 0):.3f}  "
-        f"| **Adj. Z** : {adj_z.get('z_adj', 0):.2f}  "
-        f"| **Adj. p** : {adj_z.get('p_adj', 1):.4f}",
     ]
+    # adj_z is None when the correlation stage failed. Say so rather than
+    # crashing the whole report, which is what used to happen.
+    if adj_z:
+        lines.append(
+            f"**Inter-stock avg ρ** : {adj_z.get('avg_rho', 0):.3f}  "
+            f"| **Adj. Z** : {adj_z.get('z_adj', 0):.2f}  "
+            f"| **Adj. p** : {adj_z.get('p_adj', 1):.4f}")
+    else:
+        lines.append("_Correlation-adjusted significance unavailable — "
+                     "the correlation stage did not complete._")
 
     # OOS
     if optim_results:
@@ -363,32 +436,54 @@ def _write_summary_report(available, metrics_dict, combined_metrics,
                          "rsi_pb_lo","rsi_pb_hi","vol_mult_long"):
                     lines.append(f"  - {k}: {v}")
 
-    # Monte Carlo
+    # Monte Carlo — block bootstrap on the account's daily returns
     if mc_result:
         init = mc_result["initial_equity"]
+        hz   = mc_result["horizon_days"]
         lines += [
-            "\n## Monte Carlo (10 000 simulations, position-sized returns)",
+            f"\n## Monte Carlo — one year ahead ({mc_result['n_simulations']:,} paths)",
+            "",
+            f"Moving-block bootstrap ({mc_result['block_days']}-day blocks) over "
+            f"the {mc_result['n_observed_days']:,} realised daily returns of the "
+            f"account above, projected {hz} trading days forward. Blocks rather "
+            "than single days, so volatility clustering survives the resampling.",
+            "",
             f"- Starting capital    : ₹{init:,.0f}",
             f"- Median final equity : ₹{mc_result['median_final_equity']:,.0f}  "
             f"({mc_result['median_final_equity']/init - 1:+.1%})",
             f"- 5th pct equity      : ₹{mc_result['p5_final_equity']:,.0f}  "
             f"({mc_result['p5_final_equity']/init - 1:+.1%})",
-            f"- 95th pct max DD     : {mc_result['p95_max_drawdown']:.1f}%",
+            f"- 95th pct equity     : ₹{mc_result['p95_final_equity']:,.0f}  "
+            f"({mc_result['p95_final_equity']/init - 1:+.1%})",
+            f"- Mean max drawdown   : {mc_result['mean_max_drawdown']:.1f}%",
+            f"- Worst-5% drawdown   : {mc_result['p95_max_drawdown']:.1f}%",
             f"- % profitable paths  : {mc_result['pct_profitable']:.1f}%",
         ]
 
-    # Verdict — expectancy-based, works for low-WR trend-following strategies
-    sh  = cm["sharpe"]
+    # Verdict — graded on the account-level result, not the pooled per-trade one.
+    # Sharpe here is the portfolio Sharpe (~1.0-1.3 realistic), so the threshold
+    # is far lower than the inflated trade-based figure would suggest.
     pf  = cm["profit_factor"]
     exp = cm["expectancy"]
     sig_expectancy = cm["p_value"] < 0.05          # t-test on pnl_on_equity > 0
 
-    if sh > 0.5 and pf > 1.3 and exp > 0 and sig_expectancy:
-        verdict = "✅ PROMISING — strategy shows statistically significant positive edge. Recommend paper-trading before going live."
-    elif pf > 1.1 and exp > 0:
-        verdict = "⚠ MARGINAL — positive expectancy but not yet statistically robust. Continue monitoring and refining."
+    if port_result is not None:
+        sh, dd = port_result.metrics["sharpe"], port_result.metrics["max_dd"]
+        if sh > 1.0 and dd > -35.0 and exp > 0 and sig_expectancy:
+            verdict = ("✅ PROMISING — account-level Sharpe "
+                       f"{sh:.2f} at {dd:.1f}% max drawdown, with a statistically "
+                       "significant positive expectancy. Paper-trade before going live.")
+        elif sh > 0.5 and exp > 0:
+            verdict = (f"⚠ MARGINAL — account-level Sharpe {sh:.2f} at {dd:.1f}% "
+                       "max drawdown. Positive but not yet robust enough to size up.")
+        else:
+            verdict = (f"❌ INSUFFICIENT EDGE — account-level Sharpe {sh:.2f} at "
+                       f"{dd:.1f}% max drawdown does not justify the risk.")
     else:
-        verdict = "❌ INSUFFICIENT EDGE — strategy does not show reliable statistical edge on historical data."
+        verdict = ("⚠ NO ACCOUNT-LEVEL RESULT — the portfolio replay did not run, "
+                   "so no tradeable figure is available. The per-trade statistics "
+                   f"above (profit factor {pf:.2f}, expectancy {exp:+.2f}%) describe "
+                   "signal quality only.")
 
     lines += [
         "\n## Overall Verdict",
