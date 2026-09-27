@@ -113,15 +113,22 @@ data:
 # Risk-based: each trade risks exactly risk_per_trade_pct % of current equity.
 # Position size = (equity × risk_pct) / (entry − SL), capped at max_position_pct.
 sizing:
-  starting_capital:   100000  # INR starting equity for backtest equity curve
-  risk_per_trade_pct: 1.5     # % of equity risked per trade (was 2.0 in v1.0)
-  max_position_pct:   20.0    # hard cap: never deploy more than this % in one trade
+  starting_capital:   1000000  # INR 10L starting equity
+  risk_per_trade_pct: 1.5      # % of equity risked per trade (was 2.0 in v1.0)
+  max_position_pct:   5.0      # hard cap per trade = Rs 50k on Rs 10L
 
   # ── Portfolio constraints (core/portfolio.py) ───────────────────────────────
   # The per-ticker backtester has NO portfolio limit — pooling its results
   # implies ~209 concurrent positions and ~4060% of equity deployed on average.
   # These caps make a single-account replay realistic.
-  max_positions:  15          # max concurrent open positions across the book
+  #
+  # max_positions x max_position_pct must not exceed max_gross_pct, or the
+  # position cap silently becomes the real slot limit. v1.5 had 15 x 20% = 300%
+  # against a 100% gross cap, so the book was really 5 stocks, not 15. That held
+  # the out-of-sample sample to 231 trades and left Sharpe with a +/-0.7
+  # measurement band — wide enough to hide any parameter change.
+  #   20 x 5% = 100%  <- consistent
+  max_positions:  20          # max concurrent open positions across the book
   max_gross_pct:  100.0       # max total deployed capital as % of equity (no leverage)
 
 # ── Execution costs (informational — used by backtester) ─────────────────────

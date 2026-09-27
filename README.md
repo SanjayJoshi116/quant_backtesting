@@ -342,6 +342,28 @@ pip install ruff && ruff check .
 - **Short selling:** Indian cash equity cannot be shorted overnight — positions must be squared off intraday. Holding a short needs stock futures (F&O, ~180-220 eligible names) or SLB. The backtest's short side is effectively dead anyway (84 trades in a decade, net negative).
 - **Liquidity matters more than anything else here:** the backtest assumes 0.05% slippage per side on all 869 names. That is fine for largecaps and fiction for a stock trading ₹20 lakh a day. Run `tools/liquidity_screen.py` before trusting any return figure.
 - **Kronos was evaluated and rejected:** the Kronos candlestick foundation model was tested as a source of path features. Zero-shot forecasts proved unstable on daily NSE bars — the same stock and date swung from −7% to +13% purely on context length — so it was never wired in. The code was removed in the 2026-09 cleanup; recover it from git history if a fine-tuned attempt is ever worth making.
+- **Entry timing is the largest known bias:** the backtester sets
+  `entry_px = c`, the close of the very bar that generated the signal
+  ([backtester.py:357](backtester.py#L357)). You cannot compute indicators from a
+  close and also transact at it; the tradeable price is the next open. Measured
+  across all 15,733 backtest entries, the next open is **+0.789% higher** than the
+  close the backtest used, and it moves against a long **76.2%** of the time.
+  Broken out by signal:
+
+  | Signal | n | Mean gap | Against you |
+  |---|---|---|---|
+  | BO-L | 12,946 | **+0.860%** | 78.0% |
+  | PB-L | 2,564 | +0.481% | 67.9% |
+  | BASE-BO | 143 | +0.255% | 70.6% |
+
+  This single assumption accounts for roughly three quarters of the gap between
+  backtest expectancy (+1.63%/trade) and live paper expectancy (+0.60%/trade).
+  It also explains why BO-L decays and PB-L does not: buying a fresh 12-day high
+  on heavy volume means paying up at the open, whereas buying a pullback does
+  not. Applying the gap and ~0.5% costs to BO-L's backtest +1.64% predicts about
+  +0.28%; the live ledger shows +0.31%. Until execution moves to T+1 open, every
+  backtest return in this repo is optimistic by roughly this amount.
+
 - **Not financial advice:** This is a quantitative research and learning project. Always do your own analysis before placing any trade.
 
 ---
