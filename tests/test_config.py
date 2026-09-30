@@ -146,3 +146,54 @@ def test_active_config_wfo_values():
     assert cfg.adx_long == 18,       "Expected adx_long=18 (tightened in v1.1)"
     assert cfg.rsi_pb_lo == 35,      "Expected rsi_pb_lo=35"
     assert not hasattr(cfg, "rsi_pb50_lo"), "PB50-L removed in v1.2"
+
+
+# ── Execution / fill model (edge-reality-check) ───────────────────────────────
+
+def test_execution_defaults_preserve_v15_behaviour():
+    cfg = StrategyConfig(**_valid_kwargs())
+    assert cfg.entry_fill == "signal_close"
+    assert cfg.exit_fill == "close_at_level"
+    p = cfg.to_params_dict()
+    assert p["entry_fill"] == "signal_close"
+    assert p["exit_fill"] == "close_at_level"
+
+
+def test_active_config_execution_is_default():
+    """strategy.yaml keeps v1.5 fills so main.py output is unchanged."""
+    cfg = load_config()
+    assert cfg.entry_fill == "signal_close"
+    assert cfg.exit_fill == "close_at_level"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("entry_fill", "next_close"),
+    ("exit_fill", "at_open"),
+])
+def test_invalid_fill_mode_raises_with_allowed_values(field, value):
+    with pytest.raises(ValidationError) as exc:
+        StrategyConfig(**{**_valid_kwargs(), field: value})
+    msg = str(exc.value)
+    assert value in msg
+    allowed = ("signal_close", "next_open") if field == "entry_fill" \
+        else ("close_at_level", "close_at_close", "intraday")
+    for a in allowed:
+        assert a in msg
+
+
+def test_fill_mode_params_override_wins():
+    cfg = StrategyConfig(**_valid_kwargs())
+    p = cfg.to_params_dict()
+    p.update({"entry_fill": "next_open"})
+    assert p["entry_fill"] == "next_open"
+    assert cfg.entry_fill == "signal_close"
+
+
+def test_edge_check_criteria_loaded_from_yaml():
+    cfg = load_config()
+    assert cfg.realistic_slippage_pct == 0.0015
+    assert cfg.survive_min_sharpe == 0.5
+    assert cfg.survive_beat_benchmark is True
+    assert cfg.survive_min_breakeven_slippage_pct == 0.0025
+    assert cfg.fail_if_any_period_negative is True
+    assert cfg.causal_min_turnover_cr == 25.0

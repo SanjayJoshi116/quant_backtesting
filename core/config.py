@@ -10,6 +10,7 @@ Usage (anywhere in the codebase):
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
@@ -97,6 +98,19 @@ class StrategyConfig(BaseModel):
     commission_pct: float = Field(ge=0, default=0.0005)
     slippage_pct:   float = Field(ge=0, default=0.0005)
 
+    # ── Execution / fill model ────────────────────────────────────────────────
+    # Defaults reproduce the v1.5 backtester. See config/strategy.yaml.
+    entry_fill: Literal["signal_close", "next_open"] = "signal_close"
+    exit_fill:  Literal["close_at_level", "close_at_close", "intraday"] = "close_at_level"
+
+    # ── Edge reality check (pre-registered verdict criteria) ──────────────────
+    realistic_slippage_pct:             float = Field(ge=0, default=0.0015)
+    survive_min_sharpe:                 float = 0.5
+    survive_beat_benchmark:             bool  = True
+    survive_min_breakeven_slippage_pct: float = Field(ge=0, default=0.0025)
+    fail_if_any_period_negative:        bool  = True
+    causal_min_turnover_cr:             float = Field(ge=0, default=25.0)
+
     # ── ML signal filter ──────────────────────────────────────────────────────
     # Gate is regime-conditional: the filter helps in bad regimes and costs
     # money in bull runs, so the bear threshold is the stricter of the two.
@@ -150,6 +164,8 @@ class StrategyConfig(BaseModel):
             "ml_enabled":        self.ml_enabled,
             "ml_min_score":      self.ml_min_score,
             "ml_min_score_bear": self.ml_min_score_bear,
+            "entry_fill":        self.entry_fill,
+            "exit_fill":         self.exit_fill,
         }
 
 
@@ -174,7 +190,8 @@ def load_config(path: Path | None = None) -> StrategyConfig:
     # Flatten nested YAML sections into a single dict
     flat: dict = {}
     for section in ("exit", "filters", "entry", "data", "regime", "breadth",
-                    "indicators", "sizing", "costs", "ml"):
+                    "indicators", "sizing", "costs", "ml", "execution",
+                    "edge_check"):
         flat.update(raw.get(section, {}))
 
     # Top-level keys (not nested under any section)

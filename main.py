@@ -21,6 +21,7 @@ from indicators   import prepare_indicators
 from backtester   import run_backtest
 from core.config  import load_config
 from core.logging import log_backtest_run
+from core.backtest_inputs import build_regime
 from analysis     import (compute_metrics, compute_equity_curve,
                           compute_portfolio_equity, breakdown_by_exit, breakdown_by_signal,
                           breakdown_by_year, breakdown_by_regime,
@@ -79,18 +80,11 @@ def main(force_download: bool = False, skip_optim: bool = False) -> None:
         except Exception as exc:
             print(f"  [SKIP] {ticker}: indicator error — {exc}")
 
-    nifty_ind    = None
-    nifty_regime = None
-    if nifty_raw is not None:
-        try:
-            nifty_ind = prepare_indicators(nifty_raw)
-            if load_config().regime_enabled:
-                # Bull regime: Nifty above its 200-day EMA
-                nifty_regime = (nifty_ind["Close"] > nifty_ind["EMA200"])
-                pct_bull = nifty_regime.mean() * 100
-                print(f"  Nifty regime filter : {pct_bull:.0f}% of bars in bull regime (Nifty > EMA200)")
-        except Exception:
-            pass
+    # Shared with tools/edge_reality_check.py so both feed identical inputs.
+    nifty_ind, nifty_regime = build_regime(nifty_raw)
+    if nifty_regime is not None:
+        pct_bull = nifty_regime.mean() * 100
+        print(f"  Nifty regime filter : {pct_bull:.0f}% of bars in bull regime (Nifty > EMA200)")
 
     # ── STAGE 3: Backtest ─────────────────────────────────────────────────────
     _hdr(3, "Running Backtest (default parameters)")
