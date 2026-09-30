@@ -27,6 +27,9 @@ results/trades_*.csv
 results/OOS_best.csv
 results/charts/
 results/portfolio_equity.csv
+# Edge check: per-ticker scenario trades are regenerable; the report and summary.csv are kept
+results/edge_check/*/
+results/edge_check_smoke/
 
 # Trained ML models — regenerate with: python -m core.ml.xgb_scorer
 models/

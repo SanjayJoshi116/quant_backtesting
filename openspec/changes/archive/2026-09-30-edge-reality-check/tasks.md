@@ -36,8 +36,16 @@
 
 ## 4. Run and decide
 
-- [ ] 4.1 **Gate:** the user confirms or edits the `edge_check` thresholds in `strategy.yaml` and commits them before the first full run
-- [ ] 4.2 Run the tool end-to-end; confirm a second run on the same cache gives the same metrics and verdict
-- [ ] 4.3 Run `pytest tests/` and `ruff check .`; both clean
-- [ ] 4.4 Add the verdict and headline numbers to CLAUDE.md "Known measurement traps" (fill-model bias and cost headroom), and link the report
-- [ ] 4.5 Record the recommended next step from the verdict: SURVIVES → the parity / single-source-of-truth change; MARGINAL → strategy research under the realistic fill model; FAILS → pause the live signals and paper ledger work
+- [x] 4.1 **Gate:** the user confirms or edits the `edge_check` thresholds in `strategy.yaml` and commits them before the first full run
+- [x] 4.2 Run the tool end-to-end; confirm a second run on the same cache gives the same metrics and verdict
+- [x] 4.3 Run `pytest tests/` and `ruff check .`; both clean
+- [x] 4.4 Add the verdict and headline numbers to CLAUDE.md "Known measurement traps" (fill-model bias and cost headroom), and link the report
+- [x] 4.5 Record the recommended next step from the verdict: SURVIVES → the parity / single-source-of-truth change; MARGINAL → strategy research under the realistic fill model; FAILS → pause the live signals and paper ledger work
+
+## Outcome (2026-09-30)
+
+- Verdict: **FAILS** (config 1.6). Realistic @ 0.15%/side: CAGR -17.78%, Sharpe -0.654, max DD -89.17%; 2016-20 CAGR -12.27%, 2021+ -21.86%; Nifty price CAGR 11.47%.
+- Two full runs gave a byte-identical summary.csv.
+- Trade-level check (no capital limit): mean P&L/trade baseline +1.64%, next_open +0.97%, gap_exit +1.15%, realistic +0.30%; fill effects roughly additive, so no interaction bug.
+- Next step: pause live-signal and paper-ledger work; strategy research under the realistic fill model. Operational pause (CI ledger cron) awaits user decision.
+- 4.3 needed `ruff.toml` (exclude vendor/, .claude/) and lint fixes in core/ml/kronos_features.py, tools/alpha_beta.py, tools/liquidity_screen.py, tools/run_portfolio.py.

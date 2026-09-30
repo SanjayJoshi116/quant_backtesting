@@ -32,7 +32,6 @@ import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
@@ -44,6 +43,8 @@ from core.config import load_config
 from core.portfolio import attach_turnover, load_close_series, simulate_portfolio
 from data import TICKERS
 from indicators import prepare_indicators
+
+warnings.filterwarnings("ignore")
 
 ROOT = Path(__file__).resolve().parent.parent
 TRADING_DAYS = 252.0
