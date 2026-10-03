@@ -5,30 +5,20 @@ Exit logic (long):  MeshBreak → SL → TP   (trailing stop removed)
 Exit logic (short): MeshBreak → SL → TP
 
 Design notes:
-  • Fill model is set by `execution.entry_fill` / `execution.exit_fill` in
-    config/strategy.yaml (overridable per run via `params`). The defaults below
-    reproduce the v1.5 backtester exactly:
-      entry_fill=signal_close   — entry price = close of signal bar.
-      exit_fill=close_at_level  — exit trigger uses the bar CLOSE; SL/TP fills
-                                  recorded at the level itself, not at close.
-    next_open fills at the following bar's open; close_at_close books the close;
-    intraday triggers on Low/High and fills gap-aware at the open (SL wins when
-    a bar spans both levels).
+  • Entry price = close of signal bar.
   • Commission 0.05% + slippage 0.05% per side = 0.20% total round-trip cost.
-  • SL / TP fixed at entry using ATR at the signal bar.
-  • Mesh-break and DATA_GAP exits fill at close in every mode.
+  • SL / TP fixed at entry using ATR at entry time.
+  • On daily bars the exit trigger uses the bar CLOSE (conservative).
+    SL/TP fills recorded at the level itself, not at close.
+  • Mesh-break exit fills at close.
   • Signal priority (long): PB-L > BASE-BO > BO-L.
-  • One position (or pending entry) at a time per ticker.
+  • One position at a time per ticker.
 """
 
 import numpy as np
 import pandas as pd
 
 from core.config import load_config
-
-ENTRY_FILLS = ("signal_close", "next_open")
-EXIT_FILLS  = ("close_at_level", "close_at_close", "intraday")
-
 
 def _round_trip_cost() -> float:
     cfg = load_config()
@@ -40,32 +30,15 @@ def run_backtest(df: pd.DataFrame,
                  params: dict | None = None,
                  ticker: str = "",
                  market_regime: "pd.Series | None" = None,
-                 breadth: "pd.Series | None" = None,
-                 stats: dict | None = None) -> list[dict]:
+                 breadth: "pd.Series | None" = None) -> list[dict]:
     """
     Bar-by-bar backtest on a fully-prepared indicator DataFrame.
     Exits: MeshBreak / SL / TP only (no trailing stop).
-
-    If `stats` is given it is filled with run counters — currently
-    `unfilled`: signals that could not be filled (next_open with no valid
-    next bar). The return value stays a plain trade list for existing callers.
     """
     cfg = load_config()
     p   = cfg.to_params_dict()
     if params:
         p.update(params)
-
-    entry_fill = str(p.get("entry_fill", "signal_close"))
-    exit_fill  = str(p.get("exit_fill", "close_at_level"))
-    if entry_fill not in ENTRY_FILLS:
-        raise ValueError(f"entry_fill={entry_fill!r} is invalid; "
-                         f"allowed: {', '.join(ENTRY_FILLS)}")
-    if exit_fill not in EXIT_FILLS:
-        raise ValueError(f"exit_fill={exit_fill!r} is invalid; "
-                         f"allowed: {', '.join(EXIT_FILLS)}")
-    next_open = entry_fill == "next_open"
-    intraday  = exit_fill == "intraday"
-    at_close  = exit_fill == "close_at_close"
 
     sl_mult     = float(p["sl_mult"])
     tp_long     = float(p["tp_mult_long"])
@@ -124,7 +97,6 @@ def run_backtest(df: pd.DataFrame,
     n        = len(df)
     dates    = df.index.to_numpy()
     close_a  = df["Close"].values.astype(np.float64)
-    open_a   = df["Open"].values.astype(np.float64)
     high_a   = df["High"].values.astype(np.float64)
     low_a    = df["Low"].values.astype(np.float64)
     vol_a    = df["Volume"].values.astype(np.float64)
@@ -166,11 +138,6 @@ def run_backtest(df: pd.DataFrame,
     bad_bar_a = (np.isnan(ema200_a) | np.isnan(rsi_a) | np.isnan(adx_a) |
                  np.isnan(atr_a) | np.isnan(vsma_a) | np.isnan(hh12_a) |
                  np.isnan(ll50_a))
-    # The non-default fill modes read Open/High/Low, so a bar missing any of
-    # them is unusable there. Not applied in default modes, which never read
-    # them for fills, so v1.5 behaviour is unchanged.
-    if next_open or intraday:
-        bad_bar_a = bad_bar_a | np.isnan(open_a) | np.isnan(high_a) | np.isnan(low_a)
 
     # ── Vectorised signal conditions ──────────────────────────────────────────
     # Every entry predicate is elementwise, so it is computed once over the whole
@@ -213,9 +180,6 @@ def run_backtest(df: pd.DataFrame,
     # Arrays touched only at trade events (sparse) are left as numpy.
     bad_bar  = bad_bar_a.tolist()
     close_l  = close_a.tolist()
-    open_l   = open_a.tolist()
-    high_l   = high_a.tolist()
-    low_l    = low_a.tolist()
     atr_l    = atr_a.tolist()
     ema21_l  = ema21_a.tolist()
     ema50_l  = ema50_a.tolist()
@@ -237,76 +201,34 @@ def run_backtest(df: pd.DataFrame,
     tp_px       = 0.0
     position_pct = 0.0   # fraction of equity deployed in current trade
 
-    # next_open: a signal on bar t becomes a pending entry filled at Open[t+1].
-    # Holds (direction, signal_type, atr_at_signal) or None.
-    pending  = None
-    unfilled = 0
-
     trades: list[dict] = []
-
-    def _record(exit_ts_raw, exit_px: float, exit_reason: str) -> None:
-        raw_pnl = (exit_px / entry_px - 1.0) if direction == "long" \
-                  else (entry_px / exit_px - 1.0)
-        # pnl_pct: return on the position (signal quality metric)
-        pnl_pct = (raw_pnl - _rtc) * 100.0
-        # pnl_on_equity: actual impact on account equity with position sizing
-        pnl_on_equity = (raw_pnl - _rtc) * position_pct * 100.0
-        entry_ts = pd.Timestamp(entry_date)
-        exit_ts  = pd.Timestamp(exit_ts_raw)
-        trades.append({
-            "ticker":        ticker,
-            "direction":     direction,
-            "signal_type":   sig_type,
-            "entry_date":    entry_ts,
-            "exit_date":     exit_ts,
-            "entry_price":   round(entry_px, 4),
-            "exit_price":    round(exit_px, 4),
-            "exit_reason":   exit_reason,
-            "atr_at_entry":  round(entry_atr, 4),
-            "pnl_pct":       round(pnl_pct, 4),
-            "pnl_on_equity": round(pnl_on_equity, 4),
-            "position_pct":  round(position_pct * 100, 2),
-            "bars_held":     max((exit_ts - entry_ts).days, 1),
-            "entry_fill":    entry_fill,
-            "exit_fill":     exit_fill,
-        })
-
-    def _levels(dirn: str, px: float, atr: float) -> tuple[float, float, float]:
-        """SL, TP and position fraction for a fill at `px` with ATR `atr`."""
-        if dirn == "long":
-            sl, tp = px - atr * sl_mult, px + atr * tp_long
-        else:
-            sl, tp = px + atr * sl_mult, px - atr * tp_short
-        sl_dist_pct = (atr * sl_mult) / px
-        return sl, tp, min(_risk_frac / max(sl_dist_pct, 1e-6), _max_pos)
 
     for i in range(1, n):
         c  = close_l[i]
         at = atr_l[i]
 
         if bad_bar[i]:
-            if pending is not None:          # next bar unusable — cannot fill
-                pending = None
-                unfilled += 1
             if in_pos and c == c and entry_px > 0:   # c == c is a fast NaN test
-                _record(dates[i], c, "DATA_GAP")
+                raw_pnl = (c / entry_px - 1.0) if direction == "long" \
+                          else (entry_px / c - 1.0)
+                pnl_pct = (raw_pnl - _rtc) * 100.0
+                pnl_on_equity = (raw_pnl - _rtc) * position_pct * 100.0
+                entry_ts = pd.Timestamp(entry_date)
+                exit_ts  = pd.Timestamp(dates[i])
+                trades.append({
+                    "ticker": ticker, "direction": direction,
+                    "signal_type": sig_type,
+                    "entry_date": entry_ts, "exit_date": exit_ts,
+                    "entry_price": round(entry_px, 4), "exit_price": round(c, 4),
+                    "exit_reason": "DATA_GAP",
+                    "atr_at_entry": round(entry_atr, 4),
+                    "pnl_pct": round(pnl_pct, 4),
+                    "pnl_on_equity": round(pnl_on_equity, 4),
+                    "position_pct": round(position_pct * 100, 2),
+                    "bars_held": max((exit_ts - entry_ts).days, 1),
+                })
                 in_pos = False
             continue
-
-        # ── PENDING ENTRY (next_open) ─────────────────────────────────────────
-        # Filled before the exit checks: the position is held through this
-        # bar's range and close, so it can exit on its entry bar.
-        if pending is not None:
-            direction, sig_type, entry_atr = pending
-            pending = None
-            o = open_l[i]
-            if o == o and o > 0:
-                in_pos     = True
-                entry_date = dates[i]
-                entry_px   = o
-                sl_px, tp_px, position_pct = _levels(direction, entry_px, entry_atr)
-            else:
-                unfilled += 1
 
         # ── EXIT ──────────────────────────────────────────────────────────────
         if in_pos:
@@ -315,42 +237,49 @@ def run_backtest(df: pd.DataFrame,
 
             if direction == "long":
                 mesh_brk = (ema21_l[i - 1] > ema50_l[i - 1]) and (ema21_l[i] <= ema50_l[i])
-                if intraday:
-                    # Stop/limit orders resting in the market. SL is checked
-                    # first: daily bars cannot say which level was hit first.
-                    o = open_l[i]
-                    if low_l[i] <= sl_px:
-                        exit_px, exit_reason = min(o, sl_px), "SL"
-                    elif high_l[i] >= tp_px:
-                        exit_px, exit_reason = max(o, tp_px), "TP"
-                    elif mesh_brk:
-                        exit_px, exit_reason = c, "MeshBreak"
-                elif mesh_brk:
+                if mesh_brk:
                     exit_px, exit_reason = c, "MeshBreak"
                 elif c <= sl_px:
-                    exit_px, exit_reason = (c if at_close else sl_px), "SL"
+                    exit_px, exit_reason = sl_px, "SL"
                 elif c >= tp_px:
-                    exit_px, exit_reason = (c if at_close else tp_px), "TP"
+                    exit_px, exit_reason = tp_px, "TP"
 
             else:  # short
                 mesh_brk = (ema21_l[i - 1] < ema50_l[i - 1]) and (ema21_l[i] >= ema50_l[i])
-                if intraday:
-                    o = open_l[i]
-                    if high_l[i] >= sl_px:
-                        exit_px, exit_reason = max(o, sl_px), "SL"
-                    elif low_l[i] <= tp_px:
-                        exit_px, exit_reason = min(o, tp_px), "TP"
-                    elif mesh_brk:
-                        exit_px, exit_reason = c, "MeshBreak"
-                elif mesh_brk:
+                if mesh_brk:
                     exit_px, exit_reason = c, "MeshBreak"
                 elif c >= sl_px:
-                    exit_px, exit_reason = (c if at_close else sl_px), "SL"
+                    exit_px, exit_reason = sl_px, "SL"
                 elif c <= tp_px:
-                    exit_px, exit_reason = (c if at_close else tp_px), "TP"
+                    exit_px, exit_reason = tp_px, "TP"
 
             if exit_px is not None and entry_px > 0:
-                _record(dates[i], exit_px, exit_reason)
+                raw_pnl = (exit_px / entry_px - 1.0) if direction == "long" \
+                          else (entry_px / exit_px - 1.0)
+                # pnl_pct: return on the position (signal quality metric)
+                pnl_pct = (raw_pnl - _rtc) * 100.0
+                # pnl_on_equity: actual impact on account equity with position sizing
+                pnl_on_equity = (raw_pnl - _rtc) * position_pct * 100.0
+
+                entry_ts  = pd.Timestamp(entry_date)
+                exit_ts   = pd.Timestamp(dates[i])
+                bars_held = max((exit_ts - entry_ts).days, 1)
+
+                trades.append({
+                    "ticker":        ticker,
+                    "direction":     direction,
+                    "signal_type":   sig_type,
+                    "entry_date":    entry_ts,
+                    "exit_date":     exit_ts,
+                    "entry_price":   round(entry_px, 4),
+                    "exit_price":    round(exit_px, 4),
+                    "exit_reason":   exit_reason,
+                    "atr_at_entry":  round(entry_atr, 4),
+                    "pnl_pct":       round(pnl_pct, 4),
+                    "pnl_on_equity": round(pnl_on_equity, 4),
+                    "position_pct":  round(position_pct * 100, 2),
+                    "bars_held":     bars_held,
+                })
                 in_pos = False
 
         # ── ENTRY ─────────────────────────────────────────────────────────────
@@ -421,23 +350,28 @@ def run_backtest(df: pd.DataFrame,
                     is_long = is_short = False
                     new_sig = ""
 
-            if is_long or is_short:
-                dirn = "long" if is_long else "short"
-                if next_open:
-                    # Decided on bar-i data only; filled on the next bar.
-                    pending = (dirn, new_sig, at)
-                else:
-                    in_pos     = True
-                    direction  = dirn
-                    entry_date = dates[i]
-                    entry_px   = c
-                    entry_atr  = at
-                    sig_type   = new_sig
-                    sl_px, tp_px, position_pct = _levels(dirn, entry_px, at)
+            if is_long:
+                in_pos      = True
+                direction   = "long"
+                entry_date  = dates[i]
+                entry_px    = c
+                entry_atr   = at
+                sig_type    = new_sig
+                sl_px       = entry_px - at * sl_mult
+                tp_px       = entry_px + at * tp_long
+                sl_dist_pct = (at * sl_mult) / entry_px
+                position_pct = min(_risk_frac / max(sl_dist_pct, 1e-6), _max_pos)
 
-    if pending is not None:                  # signal on the final bar
-        unfilled += 1
-    if stats is not None:
-        stats["unfilled"] = unfilled
+            elif is_short:
+                in_pos      = True
+                direction   = "short"
+                entry_date  = dates[i]
+                entry_px    = c
+                entry_atr   = at
+                sig_type    = new_sig
+                sl_px       = entry_px + at * sl_mult
+                tp_px       = entry_px - at * tp_short
+                sl_dist_pct = (at * sl_mult) / entry_px
+                position_pct = min(_risk_frac / max(sl_dist_pct, 1e-6), _max_pos)
 
     return trades

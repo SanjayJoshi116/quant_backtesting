@@ -93,7 +93,8 @@ class KronosScorer:
             from model import Kronos, KronosTokenizer, KronosPredictor
             tok = KronosTokenizer.from_pretrained(TOKENIZER_REPO)
             mdl = Kronos.from_pretrained(MODEL_REPO)
-            mdl.eval(); tok.eval()
+            mdl.eval()
+            tok.eval()
             self._pred = KronosPredictor(mdl, tok, device=self.device,
                                          max_context=self.lookback)
         return self._pred
@@ -143,20 +144,33 @@ class KronosScorer:
                 e50 = _ema_next(e50, c, 50)
                 mesh = (p21 > p50 and e21 <= e50) if long else (p21 < p50 and e21 >= e50)
                 if mesh:
-                    hit = "mesh"; break
+                    hit = "mesh"
+                    break
                 if long:
-                    if c <= sl_px: hit = "sl"; break
-                    if c >= tp_px: hit = "tp"; break
+                    if c <= sl_px:
+                        hit = "sl"
+                        break
+                    if c >= tp_px:
+                        hit = "tp"
+                        break
                 else:
-                    if c >= sl_px: hit = "sl"; break
-                    if c <= tp_px: hit = "tp"; break
-            if   hit == "tp":   n_tp += 1
-            elif hit == "sl":   n_sl += 1
-            elif hit == "mesh": n_mesh += 1
+                    if c >= sl_px:
+                        hit = "sl"
+                        break
+                    if c <= tp_px:
+                        hit = "tp"
+                        break
+            if hit == "tp":
+                n_tp += 1
+            elif hit == "sl":
+                n_sl += 1
+            elif hit == "mesh":
+                n_mesh += 1
 
             sign = 1.0 if long else -1.0
             exc = sign * (path - entry) / max(atr, 1e-9)
-            mfes.append(float(exc.max())); maes.append(float(exc.min()))
+            mfes.append(float(exc.max()))
+            maes.append(float(exc.min()))
             finals.append(sign * (float(path[-1]) / entry - 1.0))
 
         n = len(closes)

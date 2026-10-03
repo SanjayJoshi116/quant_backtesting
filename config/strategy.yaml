@@ -5,7 +5,7 @@
 # Active values = WFO-optimised (walk-forward 2016-2020 IS, 2021-2026 OOS).
 # Default/baseline values shown in comments for reference.
 
-config_version: "1.5"
+config_version: "1.6"
 
 # ── Exit / Risk management ────────────────────────────────────────────────────
 exit:
@@ -128,6 +128,43 @@ sizing:
 costs:
   commission_pct: 0.0005   # 0.05% per side
   slippage_pct:   0.0005   # 0.05% per side
+
+# ── Execution / fill model (backtester only) ──────────────────────────────────
+# How a signal becomes an entry fill and how SL/TP become exit fills.
+# Defaults reproduce the v1.5 backtester exactly. They are optimistic: entries
+# fill at the signal bar's own close, and SL books the stop level even when the
+# close gapped far through it. See openspec/changes/edge-reality-check.
+#
+#   entry_fill: signal_close   — fill at the close of the signal bar (v1.5)
+#               next_open      — fill at the open of the following bar
+#   exit_fill:  close_at_level — trigger on close, book the SL/TP level (v1.5)
+#               close_at_close — trigger on close, book the close
+#               intraday       — stop/limit orders: trigger on Low/High, fill at
+#                                the worse of level and Open for SL, the better
+#                                for TP; SL wins when one bar spans both
+# MeshBreak and DATA_GAP exits are close-based in every mode.
+execution:
+  entry_fill: signal_close
+  exit_fill:  close_at_level
+
+# ── Edge reality check — PRE-REGISTERED verdict criteria ──────────────────────
+# Used only by tools/edge_reality_check.py. Fixed and confirmed BEFORE the first
+# run (2026-09-29). Changing any value after seeing results is goalpost-moving:
+# it requires a config_version bump so the change is visible in the audit log.
+#
+#   SURVIVES  — every survive_* criterion passes for the realistic scenario
+#   FAILS     — full-period CAGR <= 0, or (fail_if_any_period_negative) CAGR <= 0
+#               in 2016-2020 or in 2021+
+#   MARGINAL  — anything else
+edge_check:
+  realistic_slippage_pct:             0.0015  # slippage per side, realistic scenario
+  survive_min_sharpe:                 0.5     # daily-return Sharpe, realistic scenario
+  survive_beat_benchmark:             true    # CAGR > Nifty 50 price-index CAGR
+  survive_min_breakeven_slippage_pct: 0.0025  # cost headroom per side
+  fail_if_any_period_negative:        true
+  # Survivorship proxy (not a verdict criterion): the causal-liquidity row keeps
+  # a trade only if 60-bar trailing median turnover at entry >= this (Rs crore/day).
+  causal_min_turnover_cr:             25.0
 
 # ── ML signal filter ──────────────────────────────────────────────────────────
 # XGBoost P(win) gate. Train with `python -m core.ml.xgb_scorer`.

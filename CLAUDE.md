@@ -21,7 +21,7 @@ Three-tier quantitative trading system for NSE (Indian equities):
 
 ## Configuration
 
-`config/strategy.yaml` is the **single source of truth** for all strategy parameters (RSI thresholds, ADX minimum, ATR multipliers, position sizing, execution costs). It is versioned and loaded via `core/config.py` (`StrategyConfig` Pydantic model).
+`config/strategy.yaml` is the **single source of truth** for all strategy parameters (RSI thresholds, ADX minimum, ATR multipliers, position sizing, execution costs, backtest fill model under `execution:`, pre-registered edge-check criteria under `edge_check:`). It is versioned and loaded via `core/config.py` (`StrategyConfig` Pydantic model).
 
 **Never hardcode strategy parameters in Python files.** Always read from `core/config.py` via `load_config()`.
 
@@ -51,6 +51,9 @@ Three-tier quantitative trading system for NSE (Indian equities):
 | Walk-forward optimisation | `optimization.py` |
 | Monte Carlo simulation | `montecarlo.py` |
 | Portfolio replay (capital limit, liquidity) | `core/portfolio.py`, `tools/run_portfolio.py` |
+| Backtest fill model (entry/exit fills, gaps) | `backtester.py` (`execution:` in `strategy.yaml`) |
+| Shared backtest input prep (cache, indicators, regime) | `core/backtest_inputs.py` |
+| Edge reality check (fill scenarios, cost headroom, verdict) | `tools/edge_reality_check.py` |
 | Full parameter inventory | `docs/PARAMETERS.md` |
 
 ## Data
@@ -79,7 +82,8 @@ pytest tests/                  # unit tests (config, data, logging, signals)
 python test_fundamental.py     # fundamental scorer integration test
 python main.py                 # full backtest = integration test for the engine
 python tools/run_portfolio.py  # portfolio replay with a real capital limit
-ruff check .                   # linting (pip install ruff; zero errors expected)
+python tools/edge_reality_check.py  # fill-scenario verdict (~25 min; --limit N to smoke-test)
+ruff check .                   # linting (pip install ruff; zero errors expected; vendor/ and .claude/ excluded in ruff.toml)
 ```
 
 ## Known measurement traps
@@ -101,6 +105,24 @@ ruff check .                   # linting (pip install ruff; zero errors expected
 - **Ranking trades by an in-sample model is lookahead.** Use
   `walk_forward_scores()` from `core/ml/xgb_scorer.py`, never the production
   model's own scores, when a score decides which trades to take.
+- **The default fill model is optimistic, and the edge FAILS without it.**
+  `execution.entry_fill: signal_close` / `exit_fill: close_at_level` fill at
+  the signal bar's own close and book SL at the stop even when price gapped
+  through. Under next-open entry + gap-aware intraday exits (config 1.6,
+  `tools/edge_reality_check.py`) the pre-registered verdict is **FAILS**:
+  one-account CAGR -17.8%, Sharpe -0.65, max DD -89% at 0.15%/side slippage,
+  vs baseline +22.0% / 1.01 and Nifty price CAGR 11.5%. Negative in both
+  2016-20 and 2021+. Mean P&L per trade falls from +1.64% (baseline) to
+  +0.30% (realistic, 0.05% slippage), ~+0.1% at 0.15%.
+  **Cost headroom is nil**: realistic CAGR is already negative at 0.05%/side;
+  baseline falls to the benchmark at ~0.37%/side. Only the >= Rs 25 cr/day
+  causal-liquidity subset stays positive (CAGR 6.6%, Sharpe 0.43, still below
+  benchmark). Any result produced in default fill modes overstates the edge.
+  Report: `results/edge_check/edge_reality_report.md`.
+  **Next step (pre-registered rule for FAILS):** pause the live-signal and
+  paper-ledger work; do not build parity/ops on this strategy. Research new
+  entries/exits under the realistic fill model (start from the liquid subset),
+  and judge them with the same tool before any live use.
 
 ## What NOT to do
 

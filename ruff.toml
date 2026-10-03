@@ -1,0 +1,2 @@
+# vendor/ is third-party code kept as-is; .claude/ holds agent tooling, not project code.
+extend-exclude = ["vendor", ".claude"]

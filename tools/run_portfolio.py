@@ -135,7 +135,7 @@ def main() -> None:
           f"-- only meaningful if it clears that band")
 
     ref = out["15 pos / 6.5% ea, rank=ML(WF)"]
-    print(f"\n  Book utilisation (15 pos / 6.5% each):")
+    print("\n  Book utilisation (15 pos / 6.5% each):")
     print(f"    open positions  mean {ref.daily_positions.mean():.1f}  "
           f"max {ref.daily_positions.max():.0f}")
     print(f"    deployed %      mean {ref.daily_deployed_pct.mean():.0f}%  "
@@ -144,7 +144,7 @@ def main() -> None:
     eq = ref.equity
     yr = eq.resample("YE").last()
     yr_ret = (yr / yr.shift(1).fillna(eq.iloc[0]) - 1) * 100
-    print(f"\n  Yearly return, 15 pos / 6.5% ea, ML(WF)-ranked:")
+    print("\n  Yearly return, 15 pos / 6.5% ea, ML(WF)-ranked:")
     for d, v in yr_ret.items():
         print(f"    {d.year}  {v:+7.1f}%")
 

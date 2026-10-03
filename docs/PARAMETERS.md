@@ -73,6 +73,24 @@ the optimiser can search.
 | `ml_min_score` | 0.50 | |
 | `ml_min_score_bear` | 0.53 | |
 
+### Execution / fill model (`execution:`, backtester only)
+| Param | Value | Meaning |
+|---|---|---|
+| `entry_fill` | signal_close | `signal_close` = fill at the signal bar's close (v1.5 behaviour); `next_open` = fill at the next bar's open |
+| `exit_fill` | close_at_level | `close_at_level` = trigger on close, book SL/TP level (v1.5); `close_at_close` = book the close; `intraday` = trigger on Low/High, gap-aware fill at Open, SL wins ties |
+
+### Edge reality check (`edge_check:`, pre-registered — `tools/edge_reality_check.py` only)
+| Param | Value | Meaning |
+|---|---|---|
+| `realistic_slippage_pct` | 0.0015 | slippage per side in the realistic scenario |
+| `survive_min_sharpe` | 0.5 | min daily-return Sharpe for SURVIVES |
+| `survive_beat_benchmark` | true | CAGR must beat Nifty 50 (price index) |
+| `survive_min_breakeven_slippage_pct` | 0.0025 | min cost headroom per side |
+| `fail_if_any_period_negative` | true | CAGR ≤ 0 in 2016-20 or 2021+ ⇒ FAILS |
+| `causal_min_turnover_cr` | 25.0 | causal-liquidity row: min 60-bar median turnover at entry (Rs cr/day); not a verdict criterion |
+
+Changing any `edge_check` value after results exist requires a `config_version` bump.
+
 ---
 
 ## 2. Hardcoded — not in config, not optimised
@@ -110,7 +128,7 @@ the optimiser can search.
 | BASE-BO volume `× 1.2` | stricter volume on base breaks |
 | Signal priority PB-L > BASE-BO > BO-L > PB-S > BO-S | which signal wins when several fire |
 | Exit priority MeshBreak > SL > TP | |
-| **Exits evaluated on CLOSE only** | not intrabar high/low |
+| **Exits evaluated on CLOSE only** (default `exit_fill`) | intrabar High/Low only with `exit_fill: intraday` |
 | `pct_from_high` window 253 | ML feature |
 
 ### `bot/signal_engine.py`
