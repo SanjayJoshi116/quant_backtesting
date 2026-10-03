@@ -1,2 +1,10 @@
 # vendor/ is third-party code kept as-is; .claude/ holds agent tooling, not project code.
 extend-exclude = ["vendor", ".claude"]
+
+[lint]
+# Pin the rule set. Ruff expanded its DEFAULT selection in a recent release,
+# so relying on the default made CI fail the moment ruff upgraded: on 0.16.10
+# the pre-merge tree reported 262 errors from rules nobody selected (BLE, C4,
+# I, S, UP, DTZ). requirements.txt pins only `ruff>=0.4`, so CI always takes
+# the newest. These four are the set the project was actually written against.
+select = ["E4", "E7", "E9", "F"]

@@ -89,4 +89,4 @@ ehthumbs.db
 
 # BMAD agent scaffolding — kept on disk, not version-controlled
 _bmad/
-.claude/skills/
+.claude/skills/bmad-*/

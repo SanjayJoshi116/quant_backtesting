@@ -5,7 +5,7 @@
 # Active values = WFO-optimised (walk-forward 2016-2020 IS, 2021-2026 OOS).
 # Default/baseline values shown in comments for reference.
 
-config_version: "1.6"
+config_version: "1.7"
 
 # ── Exit / Risk management ────────────────────────────────────────────────────
 exit:
